@@ -1,5 +1,5 @@
 name: "Meu Serviço Local"
-slug: meu_servico
+slug: terrasmart_node_mqtt
 version: "1.0.0"
 description: "Agente local para integração com dispositivos"
 arch:
