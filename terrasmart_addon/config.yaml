@@ -11,6 +11,9 @@ boot: auto
 host_network: true
 ingress: false
 
+build:
+  dockerfile: Dockerfile
+
 options:
   log_level: info
   porta: 8080
