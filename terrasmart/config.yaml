@@ -1,0 +1,25 @@
+name: "Meu Serviço Local"
+slug: meu_servico
+version: "1.0.0"
+description: "Agente local para integração com dispositivos"
+arch:
+  - amd64
+  - armv7
+  - arm64
+startup: services
+boot: auto
+host_network: true
+ingress: false
+
+options:
+  log_level: info
+  porta: 8080
+
+schema:
+  log_level: list(trace|debug|info|warning|error)
+  porta: int
+
+ports:
+  8080/tcp: 8080
+
+  panel_icon: mdi:nodejs
