@@ -22,4 +22,4 @@ schema:
 ports:
   8080/tcp: 8080
 
-  panel_icon: mdi:nodejs
+panel_icon: mdi:nodejs
