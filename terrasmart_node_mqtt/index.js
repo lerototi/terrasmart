@@ -37,9 +37,15 @@ client.on("connect", () => {
 
   client.publish("addon/status", "online", { retain: true });
   client.subscribe("addon/cmd", (err) => {
-    if (err) {
+    if (!err) {
+      console.log("Inscrito em addon/cmd");
+  }
+
+    if(err) {
       console.error("Erro ao se inscrever no tópico addon/cmd:", err);
-  }});
+      client.publish("addon/resp", `error: ${err}`);
+    }
+});
 
   // heartbeat
   setInterval(() => {
