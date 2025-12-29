@@ -60,11 +60,9 @@ client.on("message", (topic, payload) => {
   if (topic === "addon/cmd") {
     const msg = payload.toString();
     console.log(`MQTT recebido: ${topic}: ${msg}`);
-
-    if(topic === "addon/cmd") {
+  
       if (msg === "ping") {
         client.publish("addon/resp", "pong");
       }
-    }
   }
 });
