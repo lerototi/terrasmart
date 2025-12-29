@@ -1,1 +1,15 @@
+# Ignorar dependências
 node_modules/
+.yamllint
+
+# Ignorar variáveis de ambiente (Segurança)
+.env
+*.log
+
+# Ignorar arquivos do Sistema Operacional
+.DS_Store
+Thumbs.db
+
+# Ignorar pastas de IDEs
+.vscode/
+.idea/
