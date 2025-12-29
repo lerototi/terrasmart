@@ -5,9 +5,9 @@ version: 1.0.0
 description: Agente local para integração com dispositivos
 url: https://github.com/lerototi/terrasmart
 arch:
- - amd64
- - armv7
- - arm64
+  - amd64
+  - armv7
+  - arm64
 startup: services
 boot: auto
 host_network: true
