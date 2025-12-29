@@ -36,7 +36,10 @@ client.on("connect", () => {
   console.log("Conectado ao MQTT");
 
   client.publish("addon/status", "online", { retain: true });
-  client.subscribe("addon/cmd");
+  client.subscribe("addon/cmd", (err) => {
+    if (err) {
+      console.error("Erro ao se inscrever no tópico addon/cmd:", err);
+  }});
 
   // heartbeat
   setInterval(() => {
@@ -50,10 +53,12 @@ client.on("connect", () => {
 client.on("message", (topic, payload) => {
   if (topic === "addon/cmd") {
     const msg = payload.toString();
-    console.log("Comando recebido:", msg);
+    console.log(`MQTT recebido: ${topic}: ${msg}`);
 
-    if (msg === "ping") {
-      client.publish("addon/resp", "pong");
+    if(topic === "addon/cmd") {
+      if (msg === "ping") {
+        client.publish("addon/resp", "pong");
+      }
     }
   }
 });
