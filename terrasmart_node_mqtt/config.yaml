@@ -21,7 +21,7 @@ options:
   porta: 8080
   mqtt_host: "localhost"
   mqtt_port: 1883
-  mqtt_user: "terrasmart"
+  mqtt_user: "mqtt_addon"
   mqtt_password: "1234"
 
 schema:
