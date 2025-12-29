@@ -19,10 +19,18 @@ build:
 options:
   log_level: info
   porta: 8080
+  mqtt_host: "localhost"
+  mqtt_port: 1883
+  mqtt_user: "terrasmart"
+  mqtt_password: "1234"
 
 schema:
   log_level: list(trace|debug|info|warning|error)
   porta: int
+  mqtt_host: str
+  mqtt_port: int
+  mqtt_user: str
+  mqtt_password: password
 
 ports:
   8080/tcp: 8080
