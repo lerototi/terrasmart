@@ -109,6 +109,7 @@ client.on("connect", () => {
   client.publish(STATUS_TOPIC, "online", { retain: true });
 
   publishDiscovery(); // legado (mantido)
+  publishEspStatusDiscovery(deviceId);
   startHeartbeat();
 });
 
@@ -287,6 +288,33 @@ function publishEspDiscovery(deviceId) {
     { retain: true }
   );
 }
+
+function publishEspStatusDiscovery(deviceId) {
+  const uniqueId = `terrasmart_${deviceId}_status`;
+  const discoveryTopic = `homeassistant/binary_sensor/${uniqueId}/config`;
+  const stateTopic = `${ESP_BASE_TOPIC}/${deviceId}/status`;
+
+  log("info", "Publicando discovery de status", { deviceId });
+
+  client.publish(
+    discoveryTopic,
+    JSON.stringify({
+      name: `ESP ${deviceId} Online`,
+      state_topic: stateTopic,
+      payload_on: "online",
+      payload_off: "offline",
+      device_class: "connectivity",
+      unique_id: uniqueId,
+      device: {
+        identifiers: [deviceId],
+        name: `ESP ${deviceId}`,
+        via_device: DEVICE_ID,
+      },
+    }),
+    { retain: true }
+  );
+}
+
 
 
 /* ===============================
