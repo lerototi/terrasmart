@@ -99,10 +99,11 @@ client.on("connect", () => {
   log("info", "Conectado ao MQTT");
 
   client.subscribe([
-    ESP_TELEMETRY_TOPIC,           // legado
-    `${ESP_BASE_TOPIC}/+/telemetry`, // novo
-    CMD_TOPIC,
-  ]);
+  ESP_TELEMETRY_TOPIC,              // legado
+  `${ESP_BASE_TOPIC}/+/telemetry`,  // novo
+  `${ESP_BASE_TOPIC}/+/status`,     // 👈 novo
+  CMD_TOPIC,
+]);
 
   client.publish(AVAILABILITY_TOPIC, "online", { retain: true });
   client.publish(STATUS_TOPIC, "online", { retain: true });
@@ -123,6 +124,16 @@ client.on("message", (topic, payload) => {
     const parts = topic.split("/");
     const deviceId = parts[2];
     handleEspTelemetry(deviceId, msg);
+    return;
+  }
+
+  // STATUS DO ESP
+  if (topic.startsWith(`${ESP_BASE_TOPIC}/`) && topic.endsWith("/status")) {
+    const parts = topic.split("/");
+    const deviceId = parts[2];
+    const status = msg;
+
+    handleEspStatus(deviceId, status);
     return;
   }
 
@@ -187,6 +198,19 @@ function handleEspTelemetry(deviceId, payload) {
       );
     }
   }
+}
+
+function handleEspStatus(deviceId, status) {
+  log("info", "Status do ESP", { deviceId, status });
+
+  if (!espRegistry[deviceId]) {
+    espRegistry[deviceId] = {
+      discovered: false,
+      lastSeen: null,
+    };
+  }
+
+  espRegistry[deviceId].status = status;
 }
 
 function handleCommand(payload) {
