@@ -35,6 +35,8 @@ const client = mqtt.connect(mqttUrl, {
 client.on("connect", () => {
   console.log("Conectado ao MQTT");
 
+  client.subscribe("addon/esp/telemetry");
+
   client.publish("addon/status", "online", { retain: true });
   client.subscribe("addon/cmd", (err) => {
     if (!err) {
@@ -57,6 +59,26 @@ client.on("connect", () => {
 });
 
 client.on("message", (topic, payload) => {
+
+  if (topic === "addon/esp/telemetry") {
+    let data;
+
+    try {
+      data = JSON.parse(message.toString());
+    } catch (e) {
+      console.error("Telemetria inválida:", message.toString());
+      return;
+    }
+
+    if (typeof data.temperature === "number") {
+      client.publish(
+        "addon/esp/temperature",
+        data.temperature.toString(),
+        { retain: true }
+      );
+    }
+  }
+  
   if (topic === "addon/cmd") {
     const msg = payload.toString();
     console.log(`MQTT recebido: ${topic}: ${msg}`);
