@@ -158,6 +158,9 @@ function handleEspTelemetry(deviceId, payload) {
     };
 
     log("info", "Novo ESP detectado", { deviceId });
+
+    publishEspDiscovery(deviceId);
+    espRegistry[deviceId].discovered = true;
   }
 
   espRegistry[deviceId].lastSeen = Date.now();
@@ -222,6 +225,45 @@ function publishDiscovery() {
     { retain: true }
   );
 }
+
+/* ===============================
+ * DISCOVERY DINÂMICO POR ESP
+ * =============================== */
+
+function publishEspDiscovery(deviceId) {
+  const uniqueId = `terrasmart_${deviceId}_temperature`;
+  const discoveryTopic = `homeassistant/sensor/${uniqueId}/config`;
+  const stateTopic = `${ESP_BASE_TOPIC}/${deviceId}/temperature`;
+
+  log("info", "Publicando discovery do ESP", {
+    deviceId,
+    discoveryTopic,
+    stateTopic,
+  });
+
+  client.publish(
+    discoveryTopic,
+    JSON.stringify({
+      name: `Temperatura ${deviceId}`,
+      state_topic: stateTopic,
+      unit_of_measurement: "°C",
+      device_class: "temperature",
+      availability_topic: AVAILABILITY_TOPIC,
+      payload_available: "online",
+      payload_not_available: "offline",
+      unique_id: uniqueId,
+      device: {
+        identifiers: [deviceId],
+        name: `ESP ${deviceId}`,
+        manufacturer: "Terrasmart",
+        model: "ESP Sensor",
+        via_device: DEVICE_ID,
+      },
+    }),
+    { retain: true }
+  );
+}
+
 
 /* ===============================
  * HEARTBEAT
