@@ -13,10 +13,22 @@ const DEVICE_NAME = "Terrasmart Add-on";
 
 const AVAILABILITY_TOPIC = "addon/availability";
 const STATUS_TOPIC = "addon/status";
+
+// LEGADO (mantido)
 const ESP_TELEMETRY_TOPIC = "addon/esp/telemetry";
 const ESP_TEMPERATURE_TOPIC = "addon/esp/temperature";
+
+// NOVO PADRÃO
+const ESP_BASE_TOPIC = "addon/esp";
+
 const CMD_TOPIC = "addon/cmd";
 const RESP_TOPIC = "addon/resp";
+
+/* ===============================
+ * REGISTRY DE ESPs
+ * =============================== */
+
+const espRegistry = {};
 
 /* ===============================
  * LOG HELPER
@@ -55,6 +67,7 @@ app.get("/", (req, res) => {
   res.json({
     status: "ok",
     addon: DEVICE_NAME,
+    devices: Object.keys(espRegistry),
   });
 });
 
@@ -85,13 +98,16 @@ const client = mqtt.connect(mqttUrl, {
 client.on("connect", () => {
   log("info", "Conectado ao MQTT");
 
-  client.subscribe([ESP_TELEMETRY_TOPIC, CMD_TOPIC]);
+  client.subscribe([
+    ESP_TELEMETRY_TOPIC,           // legado
+    `${ESP_BASE_TOPIC}/+/telemetry`, // novo
+    CMD_TOPIC,
+  ]);
 
   client.publish(AVAILABILITY_TOPIC, "online", { retain: true });
   client.publish(STATUS_TOPIC, "online", { retain: true });
 
-  publishDiscovery();
-
+  publishDiscovery(); // legado (mantido)
   startHeartbeat();
 });
 
@@ -102,8 +118,18 @@ client.on("connect", () => {
 client.on("message", (topic, payload) => {
   const msg = payload.toString();
 
+  // NOVO PADRÃO: addon/esp/<device_id>/telemetry
+  if (topic.startsWith(`${ESP_BASE_TOPIC}/`) && topic.endsWith("/telemetry")) {
+    const parts = topic.split("/");
+    const deviceId = parts[2];
+    handleEspTelemetry(deviceId, msg);
+    return;
+  }
+
+  // LEGADO: addon/esp/telemetry
   if (topic === ESP_TELEMETRY_TOPIC) {
-    handleEspTelemetry(msg);
+    handleEspTelemetry("legacy_esp", msg);
+    return;
   }
 
   if (topic === CMD_TOPIC) {
@@ -115,7 +141,7 @@ client.on("message", (topic, payload) => {
  * HANDLERS
  * =============================== */
 
-function handleEspTelemetry(payload) {
+function handleEspTelemetry(deviceId, payload) {
   let data;
 
   try {
@@ -125,14 +151,38 @@ function handleEspTelemetry(payload) {
     return;
   }
 
-  if (typeof data.temperature === "number") {
-    log("info", "Temperatura recebida", { value: data.temperature });
+  if (!espRegistry[deviceId]) {
+    espRegistry[deviceId] = {
+      discovered: false,
+      lastSeen: null,
+    };
 
+    log("info", "Novo ESP detectado", { deviceId });
+  }
+
+  espRegistry[deviceId].lastSeen = Date.now();
+
+  if (typeof data.temperature === "number") {
+    log("info", "Temperatura recebida", {
+      deviceId,
+      value: data.temperature,
+    });
+
+    // NOVO TÓPICO POR DEVICE
     client.publish(
-      ESP_TEMPERATURE_TOPIC,
+      `${ESP_BASE_TOPIC}/${deviceId}/temperature`,
       data.temperature.toString(),
       { retain: true }
     );
+
+    // LEGADO (mantido)
+    if (deviceId === "legacy_esp") {
+      client.publish(
+        ESP_TEMPERATURE_TOPIC,
+        data.temperature.toString(),
+        { retain: true }
+      );
+    }
   }
 }
 
@@ -145,16 +195,16 @@ function handleCommand(payload) {
 }
 
 /* ===============================
- * DISCOVERY
+ * DISCOVERY (LEGADO)
  * =============================== */
 
 function publishDiscovery() {
-  log("info", "Publicando MQTT Discovery");
+  log("info", "Publicando MQTT Discovery (legado)");
 
   client.publish(
     `homeassistant/sensor/${DEVICE_ID}/esp_temperature/config`,
     JSON.stringify({
-      name: "Temperatura ESP",
+      name: "Temperatura ESP (legado)",
       state_topic: ESP_TEMPERATURE_TOPIC,
       unit_of_measurement: "°C",
       device_class: "temperature",
