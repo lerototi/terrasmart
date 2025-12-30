@@ -109,7 +109,6 @@ client.on("connect", () => {
   client.publish(STATUS_TOPIC, "online", { retain: true });
 
   publishDiscovery(); // legado (mantido)
-  publishEspStatusDiscovery(deviceId);
   startHeartbeat();
 });
 
@@ -172,6 +171,7 @@ function handleEspTelemetry(deviceId, payload) {
     log("info", "Novo ESP detectado", { deviceId });
 
     publishEspDiscovery(deviceId);
+    publishEspStatusDiscovery(deviceId);
     espRegistry[deviceId].discovered = true;
   }
 
