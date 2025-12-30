@@ -64,9 +64,9 @@ client.on("message", (topic, payload) => {
     let data;
 
     try {
-      data = JSON.parse(message.toString());
+      data = JSON.parse(payload.toString());
     } catch (e) {
-      console.error("Telemetria inválida:", message.toString());
+      console.error("Telemetria inválida:", data.toString());
       return;
     }
 
@@ -78,7 +78,7 @@ client.on("message", (topic, payload) => {
       );
     }
   }
-  
+
   if (topic === "addon/cmd") {
     const msg = payload.toString();
     console.log(`MQTT recebido: ${topic}: ${msg}`);
