@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../workspaces/smartt_terra_device"
+		},
+		{
+			"name": "terraSmart_device",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
