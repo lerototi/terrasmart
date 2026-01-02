@@ -1,5 +1,5 @@
 #include "command_handler.h"
-#include "mqtt_manager.h"
+#include "mqtt/mqtt_manager.h"
 #include "config.h"
 
 void handleCommand(String msg) {

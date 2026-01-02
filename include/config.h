@@ -3,10 +3,6 @@
 /* ================= DEVICE ================= */
 #define DEVICE_ID "esp_sensor_01"
 
-/* ================= WIFI ================= */
-#define WIFI_SSID "JANELA AMARELA"
-#define WIFI_PASS "07112417"
-
 /* ================= MQTT ================= */
 #define MQTT_HOST "10.0.0.84"
 #define MQTT_PORT 1883
