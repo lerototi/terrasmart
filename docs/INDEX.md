@@ -8,17 +8,31 @@
 
 ### Para Usuários Novos
 1. 📖 **[README.md](../README.md)** - Visão geral do projeto (5 min)
-2. 🚀 **[GUIA_FINAL.md](GUIA_FINAL.md)** - Guia completo passo a passo (20 min)
-3. 🧪 **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Como rodar testes (10 min)
+2. ⚡ **[VSCODE_TASKS.md](VSCODE_TASKS.md)** - Tasks do VS Code (Ctrl+Shift+B) ⭐ NOVO (10 min)
+3. 🚀 **[GUIA_FINAL.md](GUIA_FINAL.md)** - Guia completo passo a passo (20 min)
+4. 🧪 **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Como rodar testes (10 min)
 
 ### Para Desenvolvedores
-1. 🏗️ **[TESTING_ARCHITECTURE.md](TESTING_ARCHITECTURE.md)** - Entender arquitetura (10 min)
-2. 💡 **[TESTING_BEST_PRACTICES.md](TESTING_BEST_PRACTICES.md)** - Padrões de código (15 min)
-3. 📝 **[EXAMPLES_AND_SNIPPETS.md](EXAMPLES_AND_SNIPPETS.md)** - Exemplos práticos (20 min)
+1. ⚡ **[VSCODE_TASKS.md](VSCODE_TASKS.md)** - Tasks do VS Code (workflow profissional)
+2. 🔨 **[BUILD_GUIDE.md](BUILD_GUIDE.md)** - Guia de compilação (linha de comando)
+3. 🏗️ **[TESTING_ARCHITECTURE.md](TESTING_ARCHITECTURE.md)** - Entender arquitetura (10 min)
+4. 💡 **[TESTING_BEST_PRACTICES.md](TESTING_BEST_PRACTICES.md)** - Padrões de código (15 min)
+5. 📝 **[EXAMPLES_AND_SNIPPETS.md](EXAMPLES_AND_SNIPPETS.md)** - Exemplos práticos (20 min)
 
 ---
 
 ## 📂 Documentação por Categoria
+
+### ⚡ **VS CODE E BUILD**
+
+| Arquivo | Descrição | Tempo |
+|---------|-----------|-------|
+| **[VSCODE_TASKS.md](VSCODE_TASKS.md)** | Tasks do VS Code (menu interativo com Ctrl+Shift+B) | 15 min |
+| **[BUILD_GUIDE.md](BUILD_GUIDE.md)** | Guia completo de compilação (linha de comando) | 10 min |
+
+**Atalho Rápido:** `Ctrl+Shift+B` → Menu interativo ✨
+
+---
 
 ### 🧪 **TESTES UNITÁRIOS** (42 testes - 100% aprovação ✅)
 
