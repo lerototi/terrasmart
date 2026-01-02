@@ -1,346 +1,165 @@
 #include <DNSServer.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-
 #include "captive_portal.h"
-#include "../config/config_manager.h"
+#include "../../include/setup_manager.h"
 
 ESP8266WebServer server(80);
 DNSServer dnsServer;
+const char *AP_SSID = "terrasmart-setup";
 
-const char* AP_SSID = "terrasmart-setup";
+extern SetupManager setupManager;
 
-const char PORTAL_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <title>TerraSmart Setup</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-    .container {
-      background: white;
-      padding: 40px;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-      max-width: 500px;
-      width: 100%;
-    }
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-      font-size: 28px;
-    }
-    .subtitle {
-      color: #666;
-      margin-bottom: 30px;
-      font-size: 14px;
-    }
-    .form-group {
-      margin-bottom: 20px;
-    }
-    label {
-      display: block;
-      color: #333;
-      font-weight: 600;
-      margin-bottom: 8px;
-      font-size: 14px;
-    }
-    select, input {
-      width: 100%;
-      padding: 12px;
-      border: 2px solid #e0e0e0;
-      border-radius: 6px;
-      font-size: 14px;
-      transition: border-color 0.3s;
-      font-family: inherit;
-    }
-    select:focus, input:focus {
-      outline: none;
-      border-color: #667eea;
-    }
-    select {
-      background-color: white;
-      cursor: pointer;
-      appearance: none;
-      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23667eea' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
-      background-repeat: no-repeat;
-      background-position: right 10px center;
-      background-size: 20px;
-      padding-right: 35px;
-    }
-    .loading {
-      display: none;
-      text-align: center;
-      color: #667eea;
-      font-size: 14px;
-      margin-bottom: 20px;
-    }
-    .spinner {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border: 2px solid #f3f3f3;
-      border-top: 2px solid #667eea;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-right: 8px;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    .wifi-icon {
-      margin-right: 5px;
-    }
-    button {
-      width: 100%;
-      padding: 14px;
-      margin-top: 10px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 16px;
-      font-weight: 600;
-      transition: transform 0.2s, box-shadow 0.2s;
-    }
-    button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-    }
-    button:active {
-      transform: translateY(0);
-    }
-    .info {
-      background: #f0f4ff;
-      border-left: 4px solid #667eea;
-      padding: 12px;
-      margin-top: 20px;
-      border-radius: 4px;
-      font-size: 12px;
-      color: #555;
-    }
-    .error {
-      display: none;
-      background: #fee;
-      border-left: 4px solid #f44;
-      padding: 12px;
-      margin-bottom: 20px;
-      border-radius: 4px;
-      color: #c00;
-      font-size: 14px;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>🌐 TerraSmart Setup</h1>
-    <p class="subtitle">Configure seu dispositivo para conectar à Internet</p>
-    
-    <div class="error" id="error"></div>
-    <div class="loading" id="loading">
-      <span class="spinner"></span>Escaneando redes...
-    </div>
-    
-    <form method="POST" action="/save" id="form">
-      <div class="form-group">
-        <label for="ssid">
-          <span class="wifi-icon">📡</span>Selecione sua Rede Wi-Fi:
-        </label>
-        <select id="ssid" name="ssid" required onchange="updateSignal()">
-          <option value="">Carregando redes disponíveis...</option>
-        </select>
-      </div>
-      
-      <div class="form-group">
-        <label for="pass">
-          <span class="wifi-icon">🔐</span>Senha do Wi-Fi:
-        </label>
-        <input type="password" id="pass" name="pass" required placeholder="Digite a senha">
-      </div>
-      
-      <button type="submit">Conectar</button>
-    </form>
-    
-    <div class="info">
-      ℹ️ Seu dispositivo é <strong>TerraSmart Setup</strong>. Após conectar, será sincronizado com sua rede.
-    </div>
-  </div>
+const char STEP1_HTML[] PROGMEM = "<!DOCTYPE html><html><head><title>TerraSmart</title><meta charset='UTF-8'><meta name='viewport' content='width=device-width'><style>body{font-family:Arial;background:#667eea;margin:0;padding:20px;min-height:100vh;display:flex;align-items:center;justify-content:center}.container{background:#fff;padding:40px;border-radius:12px;max-width:500px;width:100%}h1{color:#333}label{display:block;font-weight:600;margin-bottom:8px}select,input{width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:6px;margin-bottom:20px;font-size:14px;box-sizing:border-box}button{width:100%;padding:14px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer;margin:5px 0}.error{display:none;background:#fee;border-left:4px solid #f44;color:#c00;padding:12px;margin-bottom:20px}.success{display:none;background:#efe;border-left:4px solid #4a4;color:#0a0;padding:12px;margin-bottom:20px}</style></head><body><div class='container'><h1>WiFi</h1><div class='error' id='err'></div><div class='success' id='ok'></div><label>Network:</label><select id='ssid'><option>Loading...</option></select><label>Password:</label><input type='password' id='pass'><button onclick='loadNets()'>Reload</button><button onclick='testWifi()'>Continue</button></div><script>function loadNets(){fetch('/api/scan').then(r=>r.json()).then(d=>{var sel=document.getElementById('ssid');sel.innerHTML=d.networks.map(n=>'<option>'+n.ssid+'</option>').join('')}).catch(e=>alert('Error'))}function testWifi(){var s=document.getElementById('ssid').value;var p=document.getElementById('pass').value;if(!s||!p){document.getElementById('err').style.display='block';return}fetch('/api/wifi/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,pass:p})}).then(r=>r.json()).then(d=>{if(d.success){document.getElementById('ok').style.display='block';setTimeout(()=>location.href='/step/mqtt',1500)}else{document.getElementById('err').style.display='block'}}).catch(e=>{})}window.addEventListener('load',loadNets);</script></body></html>";
 
-  <script>
-    let networks = [];
-    
-    async function loadNetworks() {
-      document.getElementById('loading').style.display = 'block';
-      try {
-        const response = await fetch('/scan');
-        const data = await response.json();
-        networks = data.networks || [];
-        
-        const select = document.getElementById('ssid');
-        select.innerHTML = networks.length > 0 
-          ? networks.map(net => `<option value="${net.ssid}">${net.ssid} (${net.rssi}dBm)</option>`).join('')
-          : '<option value="">Nenhuma rede encontrada</option>';
-        
-        if (networks.length === 0) {
-          document.getElementById('error').textContent = 'Nenhuma rede Wi-Fi encontrada. Tente novamente.';
-          document.getElementById('error').style.display = 'block';
-        }
-      } catch (e) {
-        document.getElementById('error').textContent = 'Erro ao escanear redes: ' + e.message;
-        document.getElementById('error').style.display = 'block';
-        document.getElementById('ssid').innerHTML = '<option value="">Erro ao carregar redes</option>';
-      }
-      document.getElementById('loading').style.display = 'none';
-    }
-    
-    function updateSignal() {
-      const select = document.getElementById('ssid');
-      const selectedSsid = select.value;
-      // Aqui você pode adicionar lógica para atualizar o sinal, se necessário
-    }
-    
-    // Carregar redes ao abrir a página
-    window.addEventListener('load', loadNetworks);
-    
-    // Recarregar redes a cada 30 segundos
-    setInterval(loadNetworks, 30000);
-  </script>
-</body>
-</html>
-)rawliteral";
+const char STEP2_HTML[] PROGMEM = "<!DOCTYPE html><html><head><title>TerraSmart</title><meta charset='UTF-8'><meta name='viewport' content='width=device-width'><style>body{font-family:Arial;background:#667eea;margin:0;padding:20px;min-height:100vh;display:flex;align-items:center;justify-content:center}.container{background:#fff;padding:40px;border-radius:12px;max-width:500px;width:100%}h1{color:#333}label{display:block;font-weight:600;margin-bottom:8px}select,input{width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:6px;margin-bottom:20px;font-size:14px;box-sizing:border-box}button{width:100%;padding:14px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer;margin:5px 0}.error{display:none;background:#fee;border-left:4px solid #f44;color:#c00;padding:12px;margin-bottom:20px}.success{display:none;background:#efe;border-left:4px solid #4a4;color:#0a0;padding:12px;margin-bottom:20px}</style></head><body><div class='container'><h1>MQTT</h1><div class='error' id='err'></div><div class='success' id='ok'></div><label>Host:</label><input type='text' id='host' placeholder='mqtt.example.com'><label>Port:</label><input type='number' id='port' value='1883'><label>User:</label><input type='text' id='user'><label>Pass:</label><input type='password' id='pass'><button onclick='history.back()'>Back</button><button onclick='testMqtt()'>Continue</button></div><script>function testMqtt(){var h=document.getElementById('host').value;var p=parseInt(document.getElementById('port').value);if(!h||!p){document.getElementById('err').style.display='block';return}fetch('/api/mqtt/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h,port:p})}).then(r=>r.json()).then(d=>{if(d.success){document.getElementById('ok').style.display='block';setTimeout(()=>location.href='/step/confirm',1500)}else{document.getElementById('err').style.display='block'}}).catch(e=>{})}</script></body></html>";
 
-void handlePortal() {
-  Serial.printf("[HTTP] Requisição: %s\n", server.uri().c_str());
-  Serial.printf("[HTTP] Client IP: %s\n", server.client().remoteIP().toString().c_str());
-  server.send(200, "text/html", PORTAL_HTML);
+const char STEP3_HTML[] PROGMEM = "<!DOCTYPE html><html><head><title>TerraSmart</title><meta charset='UTF-8'><meta name='viewport' content='width=device-width'><style>body{font-family:Arial;background:#667eea;margin:0;padding:20px;min-height:100vh;display:flex;align-items:center;justify-content:center}.container{background:#fff;padding:40px;border-radius:12px;max-width:500px;width:100%}h1{color:#333}.summary{background:#f9f9f9;padding:20px;border-radius:8px;margin-bottom:20px;border-left:4px solid #667eea}.summary-item{margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #e0e0e0}.summary-item:last-child{border-bottom:none}.label{font-weight:600;color:#666;font-size:12px}.value{color:#333;font-size:14px}button{width:100%;padding:14px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer;margin:5px 0}</style></head><body><div class='container'><h1>Confirm</h1><div class='summary'><div class='summary-item'><div class='label'>SSID</div><div class='value' id='s1'>-</div></div><div class='summary-item'><div class='label'>MQTT</div><div class='value' id='s2'>-</div></div><div class='summary-item'><div class='label'>Port</div><div class='value' id='s3'>-</div></div></div><button onclick='history.back()'>Back</button><button onclick='finalize()'>Finish</button></div><script>function loadSum(){fetch('/api/setup/summary').then(r=>r.json()).then(d=>{document.getElementById('s1').textContent=d.wifi_ssid||'-';document.getElementById('s2').textContent=d.mqtt_host||'-';document.getElementById('s3').textContent=d.mqtt_port||'-'}).catch(e=>{})}function finalize(){fetch('/api/setup/complete',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.success){alert('OK');setTimeout(()=>location.reload(),2000)}}).catch(e=>{})}window.addEventListener('load',loadSum);</script></body></html>";
+
+void handleRoot()
+{
+  server.sendHeader("Location", "/step/wifi");
+  server.send(302, "text/html", "");
 }
 
-void handleScan() {
-  Serial.println("[SCAN] Iniciando varredura de redes Wi-Fi...");
-  
-  // Fazer scan de redes
+void handleApiScan()
+{
   int n = WiFi.scanNetworks();
-  
   String json = "{\"networks\":[";
-  
-  if (n > 0) {
-    for (int i = 0; i < n; i++) {
-      if (i > 0) json += ",";
-      
-      String ssid = WiFi.SSID(i);
-      int rssi = WiFi.RSSI(i);
-      int sec = WiFi.encryptionType(i);
-      
-      // Escapar aspas no SSID
-      ssid.replace("\"", "\\\"");
-      
-      json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(rssi) + ",\"sec\":" + String(sec) + "}";
-      
-      Serial.printf("[SCAN] %d. %s (%d dBm)\n", i+1, WiFi.SSID(i).c_str(), rssi);
-    }
+  for (int i = 0; i < n; i++)
+  {
+    if (i > 0)
+      json += ",";
+    json += "{\"ssid\":\"" + WiFi.SSID(i) + "\"}";
   }
-  
   json += "]}";
-  
   server.send(200, "application/json", json);
-  Serial.printf("[SCAN] Total de redes encontradas: %d\n", n);
 }
 
-void handleSave() {
-  String ssid = server.arg("ssid");
-  String pass = server.arg("pass");
-
-  if (ssid.length() == 0) {
-    server.send(400, "text/html", "Erro: SSID não pode estar vazio!");
+void handleApiWiFiTest()
+{
+  if (server.method() != HTTP_POST)
+  {
+    server.send(405, "application/json", "{\"success\":false}");
     return;
   }
+  String payload = server.arg("plain");
+  int ss = payload.indexOf("\"ssid\":\"");
+  int se = payload.indexOf("\"", ss + 8);
+  String ssid = payload.substring(ss + 8, se);
+  int ps = payload.indexOf("\"pass\":\"");
+  int pe = payload.indexOf("\"", ps + 8);
+  String pass = payload.substring(ps + 8, pe);
 
-  DeviceConfig cfg;
-  cfg.wifiSsid = ssid;
-  cfg.wifiPass = pass;
+  WiFi.disconnect();
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  int att = 0;
+  while (WiFi.status() != WL_CONNECTED && att < 20)
+  {
+    delay(500);
+    att++;
+  }
 
-  if (saveConfig(cfg)) {
-    Serial.printf("[CAPTIVE] Config salva: SSID=%s\n", ssid.c_str());
-    server.send(200, "text/html", R"(
-      <html>
-      <head><meta charset="UTF-8"></head>
-      <body style="text-align:center; padding:50px;">
-        <h2>✓ Configuração Salva!</h2>
-        <p>Reiniciando o dispositivo...</p>
-        <p style="color:#666; font-size:12px;">Conecte-se à sua rede Wi-Fi</p>
-      </body>
-      </html>
-    )");
-    delay(2000);
-    ESP.restart();
-  } else {
-    server.send(500, "text/html", "Erro ao salvar configuração!");
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    setupManager.saveWiFiConfig(ssid, pass);
+    server.send(200, "application/json", "{\"success\":true}");
+  }
+  else
+  {
+    server.send(200, "application/json", "{\"success\":false}");
   }
 }
 
-void startCaptivePortal() {
-  WiFi.disconnect();
-  WiFi.mode(WIFI_AP);
-  
-  // Configurar IP estático para o AP
-  IPAddress localIP(192, 168, 4, 1);
-  IPAddress gateway(192, 168, 4, 1);
-  IPAddress subnet(255, 255, 255, 0);
-  WiFi.softAPConfig(localIP, gateway, subnet);
-  
-  WiFi.softAP(AP_SSID);
+void handleApiMQTTTest()
+{
+  if (server.method() != HTTP_POST)
+  {
+    server.send(405, "application/json", "{\"success\":false}");
+    return;
+  }
+  String payload = server.arg("plain");
+  int hs = payload.indexOf("\"host\":\"");
+  int he = payload.indexOf("\"", hs + 8);
+  String host = payload.substring(hs + 8, he);
+  int ps = payload.indexOf("\"port\":");
+  int pe = payload.indexOf("}", ps);
+  int port = payload.substring(ps + 7, pe).toInt();
 
-  delay(1000);
-
-  Serial.println("\n╔════════════════════════════════════╗");
-  Serial.println("║     MODO AP - PORTAL CAPTIVO       ║");
-  Serial.println("╚════════════════════════════════════╝");
-  Serial.printf("[AP] SSID: %s\n", AP_SSID);
-  Serial.printf("[AP] IP: 192.168.4.1\n");
-  Serial.println("[AP] Gateway: 192.168.4.1");
-  Serial.println("[AP] Conecte ao Wi-Fi 'terrasmart-setup'");
-  Serial.println("[AP] Acesse: http://192.168.4.1 ou http://setup.local\n");
-
-  // Iniciar DNS Server - captura TODAS as requisições DNS
-  dnsServer.start(53, "*", localIP);
-
-  server.on("/", handlePortal);
-  server.on("/scan", handleScan);
-  server.on("/save", HTTP_POST, handleSave);
-  server.on("/generate_204", handlePortal);  // Para Android
-  server.on("/fwlink", handlePortal);        // Para Windows
-  server.on("/connecttest.txt", handlePortal); // Para Windows
-  server.on("/hotspot-detect.html", handlePortal); // Para iOS
-  server.on("/canonical.html", handlePortal); // Para iOS
-  server.onNotFound(handlePortal);
-  
-  server.begin();
-  Serial.println("[AP] Servidor Web iniciado na porta 80\n");
+  if (host.length() > 0 && port > 0)
+  {
+    setupManager.saveMQTTConfig(host, port, "", "");
+    server.send(200, "application/json", "{\"success\":true}");
+  }
+  else
+  {
+    server.send(200, "application/json", "{\"success\":false}");
+  }
 }
 
-void captiveLoop() {
-  // Processar requisições DNS
+void handleApiSetupSummary()
+{
+  String json = "{\"wifi_ssid\":\"" + setupManager.getWiFiSSID() +
+                "\",\"mqtt_host\":\"" + setupManager.getMQTTHost() +
+                "\",\"mqtt_port\":" + String(setupManager.getMQTTPort()) + "}";
+  server.send(200, "application/json", json);
+}
+
+void handleApiSetupComplete()
+{
+  if (server.method() != HTTP_POST)
+  {
+    server.send(405, "application/json", "{\"success\":false}");
+    return;
+  }
+  setupManager.markSetupComplete();
+  server.send(200, "application/json", "{\"success\":true}");
+  delay(2000);
+  ESP.restart();
+}
+
+void startCaptivePortal()
+{
+  WiFi.disconnect();
+  WiFi.mode(WIFI_AP);
+
+  IPAddress ip(192, 168, 4, 1);
+  IPAddress gw(192, 168, 4, 1);
+  IPAddress sn(255, 255, 255, 0);
+
+  WiFi.softAPConfig(ip, gw, sn);
+  WiFi.softAP(AP_SSID);
+  delay(1000);
+
+  Serial.println("[AP] Started");
+
+  dnsServer.start(53, "*", ip);
+
+  server.on("/", handleRoot);
+  server.on("/step/wifi", []()
+            { server.send(200, "text/html", STEP1_HTML); });
+  server.on("/step/mqtt", []()
+            { server.send(200, "text/html", STEP2_HTML); });
+  server.on("/step/confirm", []()
+            { server.send(200, "text/html", STEP3_HTML); });
+  server.on("/api/scan", handleApiScan);
+  server.on("/api/wifi/test", handleApiWiFiTest);
+  server.on("/api/mqtt/test", handleApiMQTTTest);
+  server.on("/api/setup/summary", handleApiSetupSummary);
+  server.on("/api/setup/complete", handleApiSetupComplete);
+  server.on("/generate_204", []()
+            { server.send(200, "text/html", STEP1_HTML); });
+  server.on("/fwlink", []()
+            { server.send(200, "text/html", STEP1_HTML); });
+  server.onNotFound([]()
+                    { server.send(200, "text/html", STEP1_HTML); });
+
+  server.begin();
+}
+
+void captiveLoop()
+{
   dnsServer.processNextRequest();
-  
-  // Processar requisições HTTP
   server.handleClient();
-  
-  // Dar tempo para outros processos
   delay(2);
 }

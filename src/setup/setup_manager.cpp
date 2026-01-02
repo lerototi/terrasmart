@@ -407,6 +407,30 @@ bool SetupManager::_testMQTTReal(const String &host, uint16_t port,
     return true;
 }
 
+// ========== Portal Captive Getters ==========
+
+String SetupManager::getWiFiSSID() const
+{
+    return config.wifiSsid;
+}
+
+String SetupManager::getMQTTHost() const
+{
+    return config.mqttHost;
+}
+
+uint16_t SetupManager::getMQTTPort() const
+{
+    return config.mqttPort;
+}
+
+void SetupManager::markSetupComplete()
+{
+    setSetupState(SETUP_COMPLETE);
+    setOperationalState(OPERATIONAL_NORMAL);
+    Serial.println("[SETUP] Setup marcado como completo!");
+}
+
 // ========== Funções Globais ==========
 
 void initSetupManager()

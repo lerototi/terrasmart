@@ -136,6 +136,12 @@ public:
     int getWiFiAttempts() const;
     int getMQTTAttempts() const;
 
+    // Getters para portal captivo
+    String getWiFiSSID() const;
+    String getMQTTHost() const;
+    uint16_t getMQTTPort() const;
+    void markSetupComplete();
+
     // ========== Persistência ==========
 
     /// Carrega estado de setup do LittleFS
