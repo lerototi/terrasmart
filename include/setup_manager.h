@@ -104,6 +104,7 @@ public:
     /// Reseta contadores de tentativas para novo step
     void resetWiFiAttempts();
     void resetMQTTAttempts();
+    void resetSetupState();
 
     // ========== Operational Phase ==========
 
@@ -140,6 +141,7 @@ public:
     String getWiFiSSID() const;
     String getMQTTHost() const;
     uint16_t getMQTTPort() const;
+    String getMQTTUser() const;
     void markSetupComplete();
 
     // ========== Persistência ==========
@@ -150,8 +152,11 @@ public:
     /// Salva estado de setup no LittleFS
     bool saveSetupState();
 
-    /// Limpa estado de setup (reset total)
-    void resetSetupState();
+    /// Salva configuração atual (WiFi + MQTT) no LittleFS
+    bool saveCurrentConfig();
+
+    /// Reseta toda configuração (WiFi, MQTT, estado) - usado pelo botão
+    void resetConfiguration();
 
     // ========== Helpers ==========
 

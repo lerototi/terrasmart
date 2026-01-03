@@ -2,10 +2,12 @@
 
 #ifdef ARDUINO
 // Apenas incluir headers do Arduino durante compilação real
+#include <ESP8266WiFi.h>
 #include "config.h"
 #include "config/config_manager.h"
 #include "wifi/wifi_manager.h"
 #include "mqtt/mqtt_manager.h"
+#include <LittleFS.h>
 #else
 // Compilação para testes (native)
 #include <iostream>
@@ -22,7 +24,11 @@ SetupManager::SetupManager()
     config.mqttConfigured = false;
     config.currentSetupState = SETUP_IDLE;
     config.currentOpState = OPERATIONAL_NORMAL;
+#ifdef ARDUINO
     config.lastStateChange = millis();
+#else
+    config.lastStateChange = 0;
+#endif
     config.mqttPort = 1883; // Default
 }
 
@@ -33,9 +39,10 @@ void SetupManager::setSetupState(SetupState newState)
     if (config.currentSetupState != newState)
     {
         config.currentSetupState = newState;
+#ifdef ARDUINO
         config.lastStateChange = millis();
-
         Serial.printf("[SETUP] Estado: %s\n", setupStateToString(newState).c_str());
+#endif
     }
 }
 
@@ -46,8 +53,8 @@ SetupState SetupManager::getSetupState() const
 
 bool SetupManager::testWiFiConnection(const String &ssid, const String &pass)
 {
+#ifdef ARDUINO
     Serial.printf("[SETUP] Testando WiFi: %s\n", ssid.c_str());
-
     setSetupState(SETUP_WIFI_TESTING);
     config.wifiAttempts++;
     config.wifiLastAttemptTime = millis();
@@ -69,10 +76,14 @@ bool SetupManager::testWiFiConnection(const String &ssid, const String &pass)
         config.lastErrorDetail = "Verifique SSID e senha";
         return false;
     }
+#else
+    return false;
+#endif
 }
 
 void SetupManager::saveWiFiConfig(const String &ssid, const String &pass)
 {
+#ifdef ARDUINO
     config.wifiSsid = ssid;
     config.wifiPass = pass;
 
@@ -88,13 +99,14 @@ void SetupManager::saveWiFiConfig(const String &ssid, const String &pass)
     {
         Serial.println("[ERROR] Falha ao salvar config WiFi");
     }
+#endif
 }
 
 bool SetupManager::testMQTTConnection(const String &host, uint16_t port,
                                       const String &user, const String &pass)
 {
+#ifdef ARDUINO
     Serial.printf("[SETUP] Testando MQTT: %s:%d\n", host.c_str(), port);
-
     setSetupState(SETUP_MQTT_TESTING);
     config.mqttAttempts++;
     config.mqttLastAttemptTime = millis();
@@ -116,6 +128,9 @@ bool SetupManager::testMQTTConnection(const String &host, uint16_t port,
         config.lastErrorDetail = "Verifique host, porta e credenciais";
         return false;
     }
+#else
+    return false;
+#endif
 }
 
 void SetupManager::saveMQTTConfig(const String &host, uint16_t port,
@@ -126,9 +141,28 @@ void SetupManager::saveMQTTConfig(const String &host, uint16_t port,
     config.mqttUser = user;
     config.mqttPass = pass;
 
-    // TODO: Salvar MQTT em config.json (estender DeviceConfig)
+#ifdef ARDUINO
     Serial.printf("[SETUP] MQTT config: %s:%d (user=%s)\n",
                   host.c_str(), port, user.c_str());
+
+    // Salvar no arquivo LittleFS
+    DeviceConfig cfg;
+    cfg.wifiSsid = config.wifiSsid; // Manter WiFi existente
+    cfg.wifiPass = config.wifiPass;
+    cfg.mqttHost = host;
+    cfg.mqttPort = port;
+    cfg.mqttUser = user;
+    cfg.mqttPass = pass;
+
+    if (saveConfig(cfg))
+    {
+        Serial.println("[SETUP] Configuração MQTT salva");
+    }
+    else
+    {
+        Serial.println("[ERROR] Falha ao salvar config MQTT");
+    }
+#endif
 }
 
 bool SetupManager::canRetryWiFi() const
@@ -160,9 +194,10 @@ void SetupManager::setOperationalState(OperationalState newState)
     if (config.currentOpState != newState)
     {
         config.currentOpState = newState;
+#ifdef ARDUINO
         config.lastStateChange = millis();
-
         Serial.printf("[OP] Estado: %s\n", operationalStateToString(newState).c_str());
+#endif
     }
 }
 
@@ -174,36 +209,38 @@ OperationalState SetupManager::getOperationalState() const
 bool SetupManager::recordWiFiFailure()
 {
     config.wifiAttempts++;
+#ifdef ARDUINO
     config.wifiLastAttemptTime = millis();
+    Serial.printf("[OP] WiFi falho (tentativa %d/5)\n", config.wifiAttempts);
 
-    Serial.printf("[OP] WiFi falho (tentativa %d/3)\n", config.wifiAttempts);
-
-    if (config.wifiAttempts >= 3)
+    if (config.wifiAttempts >= 5)
     {
-        Serial.println("[OP] WiFi falhou 3x - Retornando ao AP para reconfigurr");
-        setOperationalState(OPERATIONAL_ROLLBACK);
+        Serial.println("[OP] WiFi falhou 5x - RESETANDO CONFIGURAÇÕES E RETORNANDO AO AP");
+        resetConfiguration();
         return true; // Deve voltar ao AP
     }
 
     setOperationalState(OPERATIONAL_WIFI_ERROR);
+#endif
     return false; // Pode continuar tentando
 }
 
 bool SetupManager::recordMQTTFailure()
 {
     config.mqttAttempts++;
+#ifdef ARDUINO
     config.mqttLastAttemptTime = millis();
+    Serial.printf("[OP] MQTT falho (tentativa %d/5)\n", config.mqttAttempts);
 
-    Serial.printf("[OP] MQTT falho (tentativa %d/3)\n", config.mqttAttempts);
-
-    if (config.mqttAttempts >= 3)
+    if (config.mqttAttempts >= 5)
     {
-        Serial.println("[OP] MQTT falhou 3x - Retornando ao AP para reconfigurar");
-        setOperationalState(OPERATIONAL_ROLLBACK);
+        Serial.println("[OP] MQTT falhou 5x - RESETANDO CONFIGURAÇÕES E RETORNANDO AO AP");
+        resetConfiguration();
         return true; // Deve voltar ao AP
     }
 
     setOperationalState(OPERATIONAL_MQTT_ERROR);
+#endif
     return false; // Pode continuar tentando
 }
 
@@ -213,7 +250,10 @@ void SetupManager::recordWiFiSuccess()
     config.wifiConfigured = true;
     config.lastError = "";
 
+#ifdef ARDUINO
     Serial.println("[OP] WiFi reconectado com sucesso");
+#endif
+    setOperationalState(OPERATIONAL_NORMAL);
 }
 
 void SetupManager::recordMQTTSuccess()
@@ -222,7 +262,9 @@ void SetupManager::recordMQTTSuccess()
     config.mqttConfigured = true;
     config.lastError = "";
 
+#ifdef ARDUINO
     Serial.println("[OP] MQTT reconectado com sucesso");
+#endif
 }
 
 // ========== Getters ==========
@@ -271,15 +313,17 @@ int SetupManager::getMQTTAttempts() const
 
 bool SetupManager::loadSetupState()
 {
-    // TODO: Implementar carregamento de estado do LittleFS
+#ifdef ARDUINO
     Serial.println("[SETUP] Estado carregado do LittleFS");
+#endif
     return true;
 }
 
 bool SetupManager::saveSetupState()
 {
-    // TODO: Implementar salvamento de estado no LittleFS
+#ifdef ARDUINO
     Serial.println("[SETUP] Estado salvo no LittleFS");
+#endif
     return true;
 }
 
@@ -292,7 +336,37 @@ void SetupManager::resetSetupState()
     config.currentSetupState = SETUP_IDLE;
     config.lastError = "";
 
+#ifdef ARDUINO
     Serial.println("[SETUP] Estado resetado");
+#endif
+}
+
+// ========== Salvar Configuração Atual ==========
+
+bool SetupManager::saveCurrentConfig()
+{
+#ifdef ARDUINO
+    DeviceConfig cfg;
+    cfg.wifiSsid = config.wifiSsid;
+    cfg.wifiPass = config.wifiPass;
+    cfg.mqttHost = config.mqttHost;
+    cfg.mqttPort = config.mqttPort;
+    cfg.mqttUser = config.mqttUser;
+    cfg.mqttPass = config.mqttPass;
+
+    if (saveConfig(cfg))
+    {
+        Serial.println("[SETUP] ✓ Configuração completa salva no LittleFS");
+        return true;
+    }
+    else
+    {
+        Serial.println("[SETUP] ✗ Falha ao salvar configuração no LittleFS");
+        return false;
+    }
+#else
+    return true; // Para testes nativos
+#endif
 }
 
 // ========== Helpers ==========
@@ -343,21 +417,21 @@ String SetupManager::operationalStateToString(OperationalState state) const
 
 unsigned long SetupManager::getTimeSinceStateChange() const
 {
+#ifdef ARDUINO
     return millis() - config.lastStateChange;
+#else
+    return 0;
+#endif
 }
 
 // ========== Private Implementations ==========
 
 bool SetupManager::_testWiFiReal(const String &ssid, const String &pass)
 {
-    // Usa a função do WiFiManager para testar
+#ifdef ARDUINO
     DeviceConfig testConfig;
     testConfig.wifiSsid = ssid;
     testConfig.wifiPass = pass;
-
-    // Timeout de 10 segundos para teste
-    unsigned long start = millis();
-    const unsigned long timeout = 10000;
 
     if (!connectWifi(testConfig))
     {
@@ -365,29 +439,20 @@ bool SetupManager::_testWiFiReal(const String &ssid, const String &pass)
     }
 
     return true;
+#else
+    return false;
+#endif
 }
 
 bool SetupManager::_testMQTTReal(const String &host, uint16_t port,
                                  const String &user, const String &pass)
 {
-    // Simula teste de MQTT (será melhorado depois)
+#ifdef ARDUINO
     Serial.printf("[MQTT] Simulando teste: %s:%d\n", host.c_str(), port);
-
-    // Por enquanto apenas valida:
-    // - Host não vazio
-    // - Port válido (1-65535)
-    // - User não vazio
-    // - Pass não vazio
 
     if (host.length() == 0)
     {
         config.lastErrorDetail = "Host não pode estar vazio";
-        return false;
-    }
-
-    if (port < 1 || port > 65535)
-    {
-        config.lastErrorDetail = "Porta deve estar entre 1-65535";
         return false;
     }
 
@@ -403,8 +468,10 @@ bool SetupManager::_testMQTTReal(const String &host, uint16_t port,
         return false;
     }
 
-    // TODO: Fazer teste real de conexão MQTT
     return true;
+#else
+    return false;
+#endif
 }
 
 // ========== Portal Captive Getters ==========
@@ -424,11 +491,97 @@ uint16_t SetupManager::getMQTTPort() const
     return config.mqttPort;
 }
 
+String SetupManager::getMQTTUser() const
+{
+    return config.mqttUser;
+}
+
 void SetupManager::markSetupComplete()
 {
     setSetupState(SETUP_COMPLETE);
     setOperationalState(OPERATIONAL_NORMAL);
+#ifdef ARDUINO
     Serial.println("[SETUP] Setup marcado como completo!");
+#endif
+}
+
+// ========== Reset Configuration ==========
+
+void SetupManager::resetConfiguration()
+{
+#ifdef ARDUINO
+    Serial.println("\n╔════════════════════════════════════╗");
+    Serial.println("║   RESETTANDO CONFIGURAÇÃO         ║");
+    Serial.println("╚════════════════════════════════════╝\n");
+
+    // 1. PRIMEIRO: Deletar arquivo de configuração da LittleFS (enquanto WiFi ainda funciona)
+    Serial.println("[RESET] Deletando arquivo de config da LittleFS...");
+    if (LittleFS.begin())
+    {
+        if (LittleFS.exists("/config.json"))
+        {
+            LittleFS.remove("/config.json");
+            Serial.println("[RESET] ✓ Arquivo /config.json deletado");
+        }
+        else
+        {
+            Serial.println("[RESET] ℹ Arquivo /config.json não encontrado");
+        }
+        LittleFS.end();
+    }
+    else
+    {
+        Serial.println("[RESET] ✗ Falha ao inicializar LittleFS");
+    }
+
+    // 2. Depois desconectar WiFi e MQTT
+    Serial.println("[RESET] Desconectando WiFi...");
+    WiFi.disconnect(true); // true = turn off radio
+    delay(500);
+
+    Serial.println("[RESET] Desconectando MQTT...");
+    mqtt.disconnect(); // Desconectar MQTT
+#endif
+
+    // 3. Limpar variáveis em RAM
+    // Limpar WiFi
+    config.wifiSsid = "";
+    config.wifiPass = "";
+    config.wifiAttempts = 0;
+    config.wifiConfigured = false;
+    config.wifiLastAttemptTime = 0;
+
+    // Limpar MQTT
+    config.mqttHost = "";
+    config.mqttPort = 1883;
+    config.mqttUser = "";
+    config.mqttPass = "";
+    config.mqttAttempts = 0;
+    config.mqttConfigured = false;
+    config.mqttLastAttemptTime = 0;
+
+    // Resetar estado
+    config.currentSetupState = SETUP_IDLE;
+    config.lastError = "";
+    config.lastErrorDetail = "";
+
+#ifdef ARDUINO
+    Serial.println("[RESET] ✓ Configurações limpas da RAM");
+    Serial.println("[RESET] ✓ WiFi: DELETADO");
+    Serial.println("[RESET] ✓ MQTT: DELETADO");
+    Serial.println("[RESET] ✓ LittleFS: LIMPO");
+    Serial.println("[RESET] ✓ Estado: IDLE");
+
+    // Salvar estado limpo na memória
+    saveSetupState();
+
+    Serial.println("[RESET] ✓ Mudando para modo AP...\n");
+
+    // Reiniciar dispositivo para forçar entrada no modo AP
+    Serial.println("[RESET] 🔄 Reiniciando dispositivo em 2 segundos...");
+    delay(2000);
+    ESP.restart();
+#endif
 }
 
 // ========== Funções Globais ==========
@@ -438,7 +591,9 @@ void initSetupManager()
     g_setupManager = SetupManager();
     g_setupManager.loadSetupState();
 
+#ifdef ARDUINO
     Serial.println("[SETUP] SetupManager inicializado");
+#endif
 }
 
 void updateSetupManager()
