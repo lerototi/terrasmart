@@ -245,28 +245,57 @@ function handleEspTelemetry(deviceId, payload) {
 }
 
 function handleEspStatus(deviceId, status) {
-  log("info", "Status do ESP", { deviceId, status });
-
+  // === DEBOUNCE: Evitar flood de logs ===
+  const now = Date.now();
+  
   if (!espRegistry[deviceId]) {
     espRegistry[deviceId] = {
       discovered: false,
       lastSeen: null,
       deviceInfo: {},
       sensorTypes: new Set(),
+      lastStatus: null,
+      lastStatusTime: 0,
     };
     
     // Publicar discovery de status na primeira vez
     publishEspStatusDiscovery(deviceId);
   }
 
-  espRegistry[deviceId].status = status;
+  // Se recebeu o mesmo status há menos de 5 segundos, ignorar
+  if (espRegistry[deviceId].lastStatus === status &&
+      (now - espRegistry[deviceId].lastStatusTime) < 5000) {
+    // Atualizar apenas o timestamp sem logar
+    espRegistry[deviceId].lastSeen = now;
+    return; // Silenciosamente ignorar duplicatas
+  }
+
+  // Log apenas se for uma mudança real ou passou tempo suficiente
+  const isStatusChange = espRegistry[deviceId].lastStatus !== status;
   
-  // Publicar status no tópico
-  client.publish(
-    `${ESP_BASE_TOPIC}/${deviceId}/status`,
-    status,
-    { retain: true }
-  );
+  if (isStatusChange) {
+    log("info", "Mudança de status do ESP", { 
+      deviceId, 
+      previousStatus: espRegistry[deviceId].lastStatus || "unknown",
+      newStatus: status 
+    });
+  } else {
+    log("debug", "Heartbeat de status do ESP", { deviceId, status });
+  }
+
+  espRegistry[deviceId].status = status;
+  espRegistry[deviceId].lastStatus = status;
+  espRegistry[deviceId].lastStatusTime = now;
+  espRegistry[deviceId].lastSeen = now;
+  
+  // Publicar status no tópico apenas se mudou
+  if (isStatusChange) {
+    client.publish(
+      `${ESP_BASE_TOPIC}/${deviceId}/status`,
+      status,
+      { retain: true }
+    );
+  }
 }
 
 function handleCommand(payload) {
