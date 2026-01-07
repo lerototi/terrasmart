@@ -162,42 +162,85 @@ function handleEspTelemetry(deviceId, payload) {
     return;
   }
 
+  // Validar estrutura básica do payload
+  if (!data.device || !data.readings || !Array.isArray(data.readings)) {
+    log("error", "Estrutura de telemetria inválida", { deviceId, payload });
+    return;
+  }
+
+  const device = data.device;
+  const readings = data.readings;
+
+  // Registrar ou atualizar ESP
   if (!espRegistry[deviceId]) {
     espRegistry[deviceId] = {
       discovered: false,
       lastSeen: null,
+      deviceInfo: {},
+      sensorTypes: new Set(),
     };
 
-    log("info", "Novo ESP detectado", { deviceId });
+    log("info", "Novo ESP detectado", { 
+      deviceId, 
+      type: device.type,
+      ip: device.ip 
+    });
 
-    publishEspDiscovery(deviceId);
-    publishEspStatusDiscovery(deviceId);
     espRegistry[deviceId].discovered = true;
   }
 
+  // Atualizar informações do dispositivo
   espRegistry[deviceId].lastSeen = Date.now();
+  espRegistry[deviceId].deviceInfo = {
+    type: device.type,
+    uptime: device.uptime,
+    heap: device.heap,
+    rssi: device.rssi,
+    ip: device.ip,
+  };
 
-  if (typeof data.temperature === "number") {
-    log("info", "Temperatura recebida", {
-      deviceId,
-      value: data.temperature,
-    });
+  // Processar cada leitura dinamicamente
+  readings.forEach((reading) => {
+    const { type, value, unit } = reading;
 
-    // NOVO TÓPICO POR DEVICE
+    if (type && value !== undefined) {
+      log("info", "Leitura recebida", {
+        deviceId,
+        readingType: type,
+        value,
+        unit: unit || "N/A",
+      });
+
+      // Registrar tipo de sensor descoberto
+      if (!espRegistry[deviceId].sensorTypes.has(type)) {
+        espRegistry[deviceId].sensorTypes.add(type);
+        
+        // Publicar discovery para este novo tipo de sensor
+        publishSensorDiscovery(deviceId, type, unit, device.type);
+      }
+
+      // Publicar valor no tópico específico do sensor
+      const sensorTopic = `${ESP_BASE_TOPIC}/${deviceId}/${type}`;
+      client.publish(sensorTopic, value.toString(), { retain: true });
+    }
+  });
+
+  // Publicar informações do dispositivo (opcional)
+  const deviceInfoTopic = `${ESP_BASE_TOPIC}/${deviceId}/device_info`;
+  client.publish(
+    deviceInfoTopic, 
+    JSON.stringify(espRegistry[deviceId].deviceInfo),
+    { retain: true }
+  );
+
+  // LEGADO: manter compatibilidade com temperatura
+  const tempReading = readings.find(r => r.type === "temperature");
+  if (tempReading && deviceId === "legacy_esp") {
     client.publish(
-      `${ESP_BASE_TOPIC}/${deviceId}/temperature`,
-      data.temperature.toString(),
+      ESP_TEMPERATURE_TOPIC,
+      tempReading.value.toString(),
       { retain: true }
     );
-
-    // LEGADO (mantido)
-    if (deviceId === "legacy_esp") {
-      client.publish(
-        ESP_TEMPERATURE_TOPIC,
-        data.temperature.toString(),
-        { retain: true }
-      );
-    }
   }
 }
 
@@ -208,10 +251,22 @@ function handleEspStatus(deviceId, status) {
     espRegistry[deviceId] = {
       discovered: false,
       lastSeen: null,
+      deviceInfo: {},
+      sensorTypes: new Set(),
     };
+    
+    // Publicar discovery de status na primeira vez
+    publishEspStatusDiscovery(deviceId);
   }
 
   espRegistry[deviceId].status = status;
+  
+  // Publicar status no tópico
+  client.publish(
+    `${ESP_BASE_TOPIC}/${deviceId}/status`,
+    status,
+    { retain: true }
+  );
 }
 
 function handleCommand(payload) {
@@ -287,6 +342,126 @@ function publishEspDiscovery(deviceId) {
     }),
     { retain: true }
   );
+}
+
+/* ===============================
+ * DISCOVERY DINÂMICO POR SENSOR
+ * =============================== */
+
+function publishSensorDiscovery(deviceId, sensorType, unit, deviceType) {
+  const uniqueId = `terrasmart_${deviceId}_${sensorType}`;
+  const stateTopic = `${ESP_BASE_TOPIC}/${deviceId}/${sensorType}`;
+  
+  // Mapeamento de tipos de sensor para device_class e domain do Home Assistant
+  const sensorConfig = getSensorConfig(sensorType, unit);
+  
+  const discoveryTopic = `homeassistant/${sensorConfig.domain}/${uniqueId}/config`;
+
+  log("info", "Publicando discovery de sensor", {
+    deviceId,
+    sensorType,
+    domain: sensorConfig.domain,
+    discoveryTopic,
+  });
+
+  const config = {
+    name: `${deviceId} ${sensorConfig.friendlyName}`,
+    state_topic: stateTopic,
+    availability_topic: AVAILABILITY_TOPIC,
+    payload_available: "online",
+    payload_not_available: "offline",
+    unique_id: uniqueId,
+    device: {
+      identifiers: [deviceId],
+      name: `ESP ${deviceId}`,
+      manufacturer: "Terrasmart",
+      model: deviceType || "ESP Sensor",
+      via_device: DEVICE_ID,
+    },
+  };
+
+  // Adicionar propriedades específicas do tipo de sensor
+  if (sensorConfig.unit_of_measurement) {
+    config.unit_of_measurement = sensorConfig.unit_of_measurement;
+  }
+  
+  if (sensorConfig.device_class) {
+    config.device_class = sensorConfig.device_class;
+  }
+
+  if (sensorConfig.domain === "binary_sensor") {
+    config.payload_on = sensorConfig.payload_on || "1";
+    config.payload_off = sensorConfig.payload_off || "0";
+  }
+
+  client.publish(discoveryTopic, JSON.stringify(config), { retain: true });
+}
+
+/* ===============================
+ * CONFIGURAÇÃO DE SENSORES
+ * =============================== */
+
+function getSensorConfig(sensorType, unit) {
+  const configs = {
+    temperature: {
+      domain: "sensor",
+      friendlyName: "Temperatura",
+      device_class: "temperature",
+      unit_of_measurement: unit || "°C",
+    },
+    humidity: {
+      domain: "sensor",
+      friendlyName: "Umidade",
+      device_class: "humidity",
+      unit_of_measurement: unit || "%",
+    },
+    distance: {
+      domain: "sensor",
+      friendlyName: "Distância",
+      device_class: "distance",
+      unit_of_measurement: unit || "cm",
+    },
+    level: {
+      domain: "sensor",
+      friendlyName: "Nível",
+      device_class: null,
+      unit_of_measurement: unit || "%",
+    },
+    state: {
+      domain: "binary_sensor",
+      friendlyName: "Estado",
+      device_class: "opening",
+      payload_on: "1",
+      payload_off: "0",
+    },
+    motion: {
+      domain: "binary_sensor",
+      friendlyName: "Movimento",
+      device_class: "motion",
+      payload_on: "1",
+      payload_off: "0",
+    },
+    pressure: {
+      domain: "sensor",
+      friendlyName: "Pressão",
+      device_class: "pressure",
+      unit_of_measurement: unit || "hPa",
+    },
+    flow: {
+      domain: "sensor",
+      friendlyName: "Fluxo",
+      device_class: null,
+      unit_of_measurement: unit || "L/min",
+    },
+  };
+
+  // Retornar configuração específica ou genérica
+  return configs[sensorType] || {
+    domain: "sensor",
+    friendlyName: sensorType.charAt(0).toUpperCase() + sensorType.slice(1),
+    device_class: null,
+    unit_of_measurement: unit || "",
+  };
 }
 
 function publishEspStatusDiscovery(deviceId) {
