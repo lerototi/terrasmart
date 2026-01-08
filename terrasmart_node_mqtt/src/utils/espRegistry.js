@@ -89,6 +89,18 @@ class EspRegistry {
   }
 
   /**
+   * Atualiza o trigger da última atualização
+   * @param {string} deviceId - ID do dispositivo
+   * @param {string} trigger - Tipo de trigger (heartbeat, change_detected)
+   */
+  updateTrigger(deviceId, trigger) {
+    if (this.devices[deviceId]) {
+      this.devices[deviceId].lastTrigger = trigger;
+      this.devices[deviceId].lastTriggerTime = Date.now();
+    }
+  }
+
+  /**
    * Retorna lista de todos os IDs de dispositivos
    * @returns {string[]}
    */

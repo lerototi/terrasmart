@@ -31,6 +31,7 @@ class TelemetryHandler {
 
     const device = data.device;
     const readings = data.readings;
+    const trigger = data.trigger; // Novo campo
 
     // Registrar ou atualizar ESP
     if (!espRegistry.exists(deviceId)) {
@@ -53,6 +54,11 @@ class TelemetryHandler {
       ip: device.ip,
     });
 
+    // Processar trigger se presente
+    if (trigger) {
+      this._processTrigger(deviceId, trigger, device.type);
+    }
+
     // Processar cada leitura dinamicamente
     readings.forEach((reading) => {
       this._processReading(deviceId, reading, device.type);
@@ -63,6 +69,34 @@ class TelemetryHandler {
 
     // LEGADO: manter compatibilidade com temperatura
     this._handleLegacyTemperature(deviceId, readings);
+  }
+
+  /**
+   * Processa o trigger da atualização
+   * @param {string} deviceId - ID do dispositivo
+   * @param {string} trigger - Tipo de trigger (heartbeat, change_detected)
+   * @param {string} deviceType - Tipo do dispositivo
+   * @private
+   */
+  _processTrigger(deviceId, trigger, deviceType) {
+    logger.info("Trigger recebido", {
+      deviceId,
+      trigger,
+    });
+
+    // Atualizar registry
+    espRegistry.updateTrigger(deviceId, trigger);
+
+    // Registrar tipo de sensor "trigger"
+    const isNewSensorType = espRegistry.addSensorType(deviceId, "trigger");
+    if (isNewSensorType) {
+      // Publicar discovery para o sensor de trigger
+      discoveryService.publishSensorDiscovery(deviceId, "trigger", null, deviceType);
+    }
+
+    // Publicar valor do trigger no tópico específico
+    const triggerTopic = `${ESP_BASE_TOPIC}/${deviceId}/trigger`;
+    mqttService.publish(triggerTopic, trigger, { retain: true });
   }
 
   /**

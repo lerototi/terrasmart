@@ -46,6 +46,8 @@ class HttpServer {
           lastSeen: device.lastSeen,
           status: device.status,
           sensorTypes: Array.from(device.sensorTypes || []),
+          lastTrigger: device.lastTrigger,
+          lastTriggerTime: device.lastTriggerTime,
         };
       });
 

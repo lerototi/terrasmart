@@ -60,6 +60,13 @@ function getSensorConfig(sensorType, unit) {
       device_class: null,
       unit_of_measurement: unit || "L/min",
     },
+    trigger: {
+      domain: "sensor",
+      friendlyName: "Tipo de Atualização",
+      device_class: null,
+      unit_of_measurement: null,
+      icon: "mdi:update",
+    },
   };
 
   // Retornar configuração específica ou genérica

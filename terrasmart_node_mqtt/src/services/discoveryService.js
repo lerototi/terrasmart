@@ -87,6 +87,10 @@ class DiscoveryService {
       config.device_class = sensorConfig.device_class;
     }
 
+    if (sensorConfig.icon) {
+      config.icon = sensorConfig.icon;
+    }
+
     if (sensorConfig.domain === "binary_sensor") {
       config.payload_on = sensorConfig.payload_on || "1";
       config.payload_off = sensorConfig.payload_off || "0";
