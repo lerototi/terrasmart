@@ -1,7 +1,7 @@
 ---
 name: Terrasmart
 slug: terrasmart_node_mqtt
-version: 1.4.1
+version: 1.5.1
 description: Agente local para integração com dispositivos
 url: https://github.com/lerototi/terrasmart
 arch:
