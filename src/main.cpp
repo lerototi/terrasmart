@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <time.h>
 #include "config.h"
 #include "config/config_manager.h"
 #include "wifi/wifi_manager.h"
@@ -9,6 +10,8 @@
 #include "setup_manager.h"
 
 unsigned long lastTelemetry = 0;
+unsigned long lastNTPSync = 0;
+bool ntpSynced = false;
 
 // Instâncias globais para botão e setup manager
 ButtonHandler buttonHandler;
@@ -66,6 +69,14 @@ void setup()
   Serial.println("[BOOT] WiFi conectado! Iniciando MQTT...");
   setupMQTT(config);
 
+  // Sincronizar NTP com múltiplos servidores (local + público)
+  Serial.println("[NTP] Sincronizando relógio...");
+  Serial.printf("[NTP] Servidores: %s, pool.ntp.br, time.google.com\n", NTP_SERVER);
+  Serial.printf("[NTP] Timezone: UTC%+d\n", NTP_TIMEZONE);
+  
+  // Configura 3 servidores: 1) HA local, 2) Pool brasileiro, 3) Google
+  configTime(NTP_TIMEZONE * 3600, 0, NTP_SERVER, "pool.ntp.br", "time.google.com");
+
   // Inicializar sensor
   if (!initSensor())
   {
@@ -73,6 +84,29 @@ void setup()
   }
 
   Serial.println("[BOOT] Setup completo!\n");
+}
+
+// Função para obter timestamp ISO8601
+String getISOTimestamp()
+{
+  time_t now = time(nullptr);
+  
+  // Se não sincronizou ainda, retornar uptime
+  if (now < 100000)
+  {
+    return "uptime:" + String(millis() / 1000) + "s";
+  }
+  
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+  
+  char buffer[30];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+  
+  // Adicionar timezone offset
+  sprintf(buffer + strlen(buffer), "%+03d:00", NTP_TIMEZONE);
+  
+  return String(buffer);
 }
 
 void loop()
@@ -95,16 +129,8 @@ void loop()
   }
 
   // Modo Operacional
-  if (deviceMode == MODE_OPERATIONAL)
+  else if (deviceMode == MODE_OPERATIONAL)
   {
-    // Debug: log a cada 5 segundos para confirmar que está no modo operacional
-    static unsigned long lastDebugLog = 0;
-    if (millis() - lastDebugLog > 5000)
-    {
-      lastDebugLog = millis();
-      Serial.println("[DEBUG] Modo operacional ativo - verificando conexões...");
-    }
-
     // Verificar se deve fazer rollback por falhas consecutivas
     if (g_setupManager.getOperationalState() == OPERATIONAL_ROLLBACK)
     {
@@ -117,16 +143,37 @@ void loop()
 
     // Verificar conexão WiFi continuamente
     checkWiFiConnection();
+    yield(); // Dar tempo ao watchdog
 
     // Processar MQTT e manter conexão
     loopMQTT();
+    yield(); // Dar tempo ao watchdog
+
+    // Verificar e logar sincronização NTP (apenas uma vez)
+    if (!ntpSynced)
+    {
+      time_t now = time(nullptr);
+      if (now > 100000) // Timestamp válido
+      {
+        ntpSynced = true;
+        Serial.printf("[NTP] ✓ Sincronizado: %s\n", getISOTimestamp().c_str());
+      }
+    }
+
+    // Re-sincronizar NTP a cada hora
+    if (millis() - lastNTPSync > (NTP_UPDATE_INTERVAL * 1000UL))
+    {
+      lastNTPSync = millis();
+      configTime(NTP_TIMEZONE * 3600, 0, NTP_SERVER, "pool.ntp.br", "time.google.com");
+    }
 
     // Enviar telemetria periodicamente
     if (millis() - lastTelemetry > TELEMETRY_INTERVAL)
     {
       lastTelemetry = millis();
-      Serial.println("[DEBUG] Enviando telemetria...");
       sendTelemetry();
     }
+
+    yield(); // Dar tempo ao watchdog
   }
 }

@@ -86,13 +86,8 @@ bool connectWifi(const DeviceConfig &config)
     }
   }
 
-  Serial.println("\n[WiFi] ✓ Conectado com sucesso!");
-  Serial.printf("[WiFi] SSID: %s\n", WiFi.SSID().c_str());
-  Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
-  Serial.printf("[WiFi] RSSI: %d dBm\n", WiFi.RSSI());
-  Serial.printf("[WiFi] Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-  Serial.printf("[WiFi] DNS: %s\n", WiFi.dnsIP().toString().c_str());
-  Serial.println();
+  Serial.println("\n[WiFi] ✓ Conectado!");
+  Serial.printf("[WiFi] IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
   return true;
 }

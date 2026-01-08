@@ -55,20 +55,38 @@ SensorData DHT22Sensor::read()
         return SensorData(0, 0, 0, false);
     }
 
+    // Throttling: DHT22 não deve ser lido mais que 1x a cada 2 segundos
+    static unsigned long lastReadTime = 0;
+    static SensorData lastValidData = SensorData(0, 0, 0, false);
+
+    unsigned long now = millis();
+    if (now - lastReadTime < 2000 && lastValidData.valid)
+    {
+        // Retornar última leitura válida (cache)
+        return lastValidData;
+    }
+
+    yield(); // Dar tempo ao watchdog
+
     float temperature = dht->readTemperature();
+    yield(); // Dar tempo ao watchdog
+
     float humidity = dht->readHumidity();
+    yield(); // Dar tempo ao watchdog
+
+    lastReadTime = now;
 
     // Verificar se as leituras são válidas
     if (isnan(temperature) || isnan(humidity))
     {
-        Serial.println("[DHT22] ✗ Erro na leitura - valores NaN");
+        Serial.println("[DHT22] ✗ Leitura inválida");
         return SensorData(0, 0, 0, false);
     }
 
     // Validar ranges realistas
     if (temperature < -40 || temperature > 80)
     {
-        Serial.printf("[DHT22] ✗ Temperatura fora do range: %.1f°C\n", temperature);
+        Serial.printf("[DHT22] ✗ Temp fora do range: %.1f°C\n", temperature);
         return SensorData(0, 0, 0, false);
     }
 
@@ -78,7 +96,8 @@ SensorData DHT22Sensor::read()
         return SensorData(0, 0, 0, false);
     }
 
-    return SensorData(temperature, humidity, 0.0f, true);
+    lastValidData = SensorData(temperature, humidity, 0.0f, true);
+    return lastValidData;
 }
 
 const char *DHT22Sensor::getName() const

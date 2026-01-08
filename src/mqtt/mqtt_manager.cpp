@@ -83,18 +83,9 @@ bool mqttIsConnected()
 
 void loopMQTT()
 {
-  // Debug: indicar que loopMQTT está sendo executado
-  static unsigned long lastMQTTDebug = 0;
-  if (millis() - lastMQTTDebug > 10000) // A cada 10 segundos
-  {
-    lastMQTTDebug = millis();
-    Serial.printf("[MQTT] Loop ativo - Conectado: %s\n", mqtt.connected() ? "SIM" : "NAO");
-  }
-
   // Verificar se WiFi está conectado
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.printf("[MQTT] ✗ WiFi não conectado (status: %d)\n", WiFi.status());
     return;
   }
 
@@ -114,11 +105,10 @@ void loopMQTT()
 
   lastReconnectAttempt = now;
 
-  Serial.println("\n[MQTT] ═══════════════════════════════════");
-  Serial.print("[MQTT] Tentando conectar em: ");
-  Serial.printf("%s:%d ", currentMQTTConfig.mqttHost.c_str(), currentMQTTConfig.mqttPort);
-  Serial.printf("(usuário: %s)\n", currentMQTTConfig.mqttUser.c_str());
-  Serial.printf("[MQTT] IP Local: %s\n", WiFi.localIP().toString().c_str());
+  Serial.print("[MQTT] Conectando em ");
+  Serial.print(currentMQTTConfig.mqttHost);
+  Serial.print(":");
+  Serial.println(currentMQTTConfig.mqttPort);
 
   if (mqtt.connect(
           DEVICE_ID,
@@ -129,13 +119,9 @@ void loopMQTT()
           true,
           "offline"))
   {
-
-    Serial.println("[MQTT] ✓ Conectado com sucesso!");
-    Serial.printf("[MQTT] Broker: %s:%d\n", currentMQTTConfig.mqttHost.c_str(), currentMQTTConfig.mqttPort);
+    Serial.println("[MQTT] ✓ Conectado!");
     publishStatus("online");
     mqtt.subscribe(MQTT_CMD_TOPIC);
-    Serial.printf("[MQTT] ✓ Inscrito em: %s\n", MQTT_CMD_TOPIC);
-    Serial.println();
 
     // Registrar sucesso de MQTT
     g_setupManager.recordMQTTSuccess();
@@ -143,53 +129,10 @@ void loopMQTT()
   else
   {
     int state = mqtt.state();
-    Serial.print("[MQTT] ✗ Falha na conexão - rc=");
-    Serial.println(state);
-
-    // Debug: imprimir o motivo da falha
-    switch (state)
-    {
-    case -4:
-      Serial.println("[MQTT] ► Timeout na conexão (verificar firewall/rede)");
-      break;
-    case -3:
-      Serial.println("[MQTT] ► Falha lendo socket");
-      break;
-    case -2:
-      Serial.println("[MQTT] ► Socket não conectado (verificar IP/Porta/Firewall)");
-      break;
-    case -1:
-      Serial.println("[MQTT] ► Socket timeout");
-      break;
-    case 1:
-      Serial.println("[MQTT] ► Versão MQTT inválida");
-      break;
-    case 2:
-      Serial.println("[MQTT] ► ID do cliente inválido");
-      break;
-    case 3:
-      Serial.println("[MQTT] ► Servidor MQTT indisponível");
-      break;
-    case 4:
-      Serial.println("[MQTT] ► Usuário/Senha incorretos");
-      break;
-    case 5:
-      Serial.println("[MQTT] ► Não autorizado");
-      break;
-    default:
-      Serial.printf("[MQTT] ► Erro desconhecido: %d\n", state);
-    }
-
-    // Debug adicional: verificar estado do WiFi
-    Serial.printf("[MQTT] Estado WiFi: %d (conectado=%d)\n", WiFi.status(), WL_CONNECTED);
-    Serial.printf("[MQTT] SSID: %s\n", WiFi.SSID().c_str());
-    Serial.printf("[MQTT] IP: %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("[MQTT] ⚠️ Tentará reconectar em 5 segundos...\n");
-    Serial.println("[MQTT] 💡 Para resetar configurações, pressione o botão por 5s");
-    Serial.println("[MQTT] ═══════════════════════════════════\n");
-
-    // REMOVIDO: g_setupManager.recordMQTTFailure();
-    // Agora só reseta com botão físico pressionado por 5s
+    Serial.print("[MQTT] ✗ Falha rc=");
+    Serial.print(state);
+    Serial.println(" - Retry em 5s");
+    Serial.println("[MQTT] 💡 Reset: botão 5s");
   }
 }
 

@@ -1,4 +1,5 @@
 #include <ESP8266WiFi.h>
+#include <time.h>
 #include "telemetry.h"
 #include "../mqtt/mqtt_manager.h"
 #include "config.h"
@@ -7,6 +8,29 @@
 
 // Instância global do sensor
 static BaseSensor *g_sensor = nullptr;
+
+// Função para obter timestamp ISO8601
+static String getISOTimestamp()
+{
+    time_t now = time(nullptr);
+    
+    // Se não sincronizou ainda, retornar uptime
+    if (now < 100000)
+    {
+        return "uptime:" + String(millis() / 1000) + "s";
+    }
+    
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    
+    char buffer[30];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+    
+    // Adicionar timezone offset (definido em config.h)
+    sprintf(buffer + strlen(buffer), "%+03d:00", NTP_TIMEZONE);
+    
+    return String(buffer);
+}
 
 bool initSensor()
 {
@@ -60,11 +84,8 @@ void sendTelemetry()
         return;
     }
 
-    // Criar timestamp ISO 8601
-    char timestamp[25];
-    time_t now = time(nullptr);
-    struct tm *timeinfo = localtime(&now);
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S.000Z", timeinfo);
+    // Criar timestamp ISO 8601 (sincronizado com NTP local)
+    String timestamp = getISOTimestamp();
 
     // Obter IP do dispositivo
     String ipAddress = WiFi.localIP().toString();
