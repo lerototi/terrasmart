@@ -184,11 +184,12 @@ void loopMQTT()
     Serial.printf("[MQTT] Estado WiFi: %d (conectado=%d)\n", WiFi.status(), WL_CONNECTED);
     Serial.printf("[MQTT] SSID: %s\n", WiFi.SSID().c_str());
     Serial.printf("[MQTT] IP: %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("[MQTT] Tentará reconectar em 5 segundos...\n");
+    Serial.printf("[MQTT] ⚠️ Tentará reconectar em 5 segundos...\n");
+    Serial.println("[MQTT] 💡 Para resetar configurações, pressione o botão por 5s");
     Serial.println("[MQTT] ═══════════════════════════════════\n");
 
-    // Registrar falha de MQTT
-    g_setupManager.recordMQTTFailure();
+    // REMOVIDO: g_setupManager.recordMQTTFailure();
+    // Agora só reseta com botão físico pressionado por 5s
   }
 }
 

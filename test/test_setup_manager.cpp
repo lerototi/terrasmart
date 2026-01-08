@@ -226,7 +226,10 @@ TEST_F(SetupManagerTest, CanTransitionOperationalStates)
 }
 
 // ========== WiFi Failure Handling Tests ==========
+// REMOVIDO: Não resetamos mais automaticamente por falhas de WiFi/MQTT
+// O reset só acontece via botão físico (5 segundos pressionado)
 
+/*
 TEST_F(SetupManagerTest, RecordWiFiFailureIncrementsCounter)
 {
     manager.setOperationalState(OPERATIONAL_NORMAL);
@@ -253,23 +256,21 @@ TEST_F(SetupManagerTest, WiFiRollbackAfterThreeFailures)
     EXPECT_TRUE(rollback3);
     EXPECT_EQ(manager.getOperationalState(), OPERATIONAL_ROLLBACK);
 }
+*/
 
 TEST_F(SetupManagerTest, RecordWiFiSuccessResetsCounter)
 {
-    // Simular algumas falhas
-    manager.recordWiFiFailure();
-    manager.recordWiFiFailure();
-
-    EXPECT_EQ(manager.getWiFiAttempts(), 2);
-
-    // Sucesso deve resetar
+    // Sucesso deve marcar WiFi como configurado
     manager.recordWiFiSuccess();
     EXPECT_EQ(manager.getWiFiAttempts(), 0);
     EXPECT_TRUE(manager.isWiFiConfigured());
 }
 
 // ========== MQTT Failure Handling Tests ==========
+// REMOVIDO: Não resetamos mais automaticamente por falhas de MQTT
+// O reset só acontece via botão físico (5 segundos pressionado)
 
+/*
 TEST_F(SetupManagerTest, RecordMQTTFailureIncrementsCounter)
 {
     manager.setOperationalState(OPERATIONAL_NORMAL);
@@ -291,14 +292,11 @@ TEST_F(SetupManagerTest, MQTTRollbackAfterThreeFailures)
     EXPECT_TRUE(rollback3);
     EXPECT_EQ(manager.getOperationalState(), OPERATIONAL_ROLLBACK);
 }
+*/
 
 TEST_F(SetupManagerTest, RecordMQTTSuccessResetsCounter)
 {
-    manager.recordMQTTFailure();
-    manager.recordMQTTFailure();
-
-    EXPECT_EQ(manager.getMQTTAttempts(), 2);
-
+    // Sucesso deve marcar MQTT como configurado
     manager.recordMQTTSuccess();
     EXPECT_EQ(manager.getMQTTAttempts(), 0);
     EXPECT_TRUE(manager.isMQTTConfigured());
@@ -319,11 +317,11 @@ TEST_F(SetupManagerTest, ResetClearsAllState)
 {
     manager.saveMQTTConfig("host", 1883, "user", "pass");
     manager.saveWiFiConfig("ssid", "pass");
-    manager.recordWiFiFailure();
-    manager.recordMQTTFailure();
+    // REMOVIDO: manager.recordWiFiFailure();
+    // REMOVIDO: manager.recordMQTTFailure();
 
     EXPECT_TRUE(manager.getConfig().wifiSsid.length() > 0);
-    EXPECT_EQ(manager.getWiFiAttempts(), 1);
+    // REMOVIDO: EXPECT_EQ(manager.getWiFiAttempts(), 1);
 
     manager.resetSetupState();
 
@@ -382,6 +380,8 @@ TEST_F(SetupManagerTest, CompleteSetupFlow)
     EXPECT_EQ(manager.getSetupState(), SETUP_COMPLETE);
 }
 
+/*
+// REMOVIDO: Não resetamos mais automaticamente por falhas
 TEST_F(SetupManagerTest, FailureRecoveryFlow)
 {
     // Modo operacional
@@ -397,3 +397,4 @@ TEST_F(SetupManagerTest, FailureRecoveryFlow)
     EXPECT_TRUE(rollback);
     EXPECT_EQ(manager.getOperationalState(), OPERATIONAL_ROLLBACK);
 }
+*/

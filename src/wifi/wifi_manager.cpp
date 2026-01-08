@@ -121,7 +121,7 @@ bool checkWiFiConnection()
       Serial.printf("[WiFi] ✗ Conexão perdida (status: %d)\n", WiFi.status());
       wasConnected = false;
     }
-    // Registrar falha (isso vai contar as tentativas)
-    return g_setupManager.recordWiFiFailure();
+    // Não registrar falha - apenas retry contínuo
+    return false;
   }
 }

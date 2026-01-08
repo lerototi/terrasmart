@@ -206,44 +206,6 @@ OperationalState SetupManager::getOperationalState() const
     return config.currentOpState;
 }
 
-bool SetupManager::recordWiFiFailure()
-{
-    config.wifiAttempts++;
-#ifdef ARDUINO
-    config.wifiLastAttemptTime = millis();
-    Serial.printf("[OP] WiFi falho (tentativa %d/5)\n", config.wifiAttempts);
-
-    if (config.wifiAttempts >= 5)
-    {
-        Serial.println("[OP] WiFi falhou 5x - RESETANDO CONFIGURAÇÕES E RETORNANDO AO AP");
-        resetConfiguration();
-        return true; // Deve voltar ao AP
-    }
-
-    setOperationalState(OPERATIONAL_WIFI_ERROR);
-#endif
-    return false; // Pode continuar tentando
-}
-
-bool SetupManager::recordMQTTFailure()
-{
-    config.mqttAttempts++;
-#ifdef ARDUINO
-    config.mqttLastAttemptTime = millis();
-    Serial.printf("[OP] MQTT falho (tentativa %d/5)\n", config.mqttAttempts);
-
-    if (config.mqttAttempts >= 5)
-    {
-        Serial.println("[OP] MQTT falhou 5x - RESETANDO CONFIGURAÇÕES E RETORNANDO AO AP");
-        resetConfiguration();
-        return true; // Deve voltar ao AP
-    }
-
-    setOperationalState(OPERATIONAL_MQTT_ERROR);
-#endif
-    return false; // Pode continuar tentando
-}
-
 void SetupManager::recordWiFiSuccess()
 {
     config.wifiAttempts = 0;

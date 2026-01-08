@@ -112,14 +112,6 @@ public:
     void setOperationalState(OperationalState newState);
     OperationalState getOperationalState() const;
 
-    /// Registra falha de WiFi durante operação
-    /// Retorna true se excedeu 3 tentativas (deve voltar AP)
-    bool recordWiFiFailure();
-
-    /// Registra falha de MQTT durante operação
-    /// Retorna true se excedeu 3 tentativas
-    bool recordMQTTFailure();
-
     /// Reseta falhas ao reconectar com sucesso
     void recordWiFiSuccess();
     void recordMQTTSuccess();
