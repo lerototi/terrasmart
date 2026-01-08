@@ -73,7 +73,7 @@ void setup()
   Serial.println("[NTP] Sincronizando relógio...");
   Serial.printf("[NTP] Servidores: %s, pool.ntp.br, time.google.com\n", NTP_SERVER);
   Serial.printf("[NTP] Timezone: UTC%+d\n", NTP_TIMEZONE);
-  
+
   // Configura 3 servidores: 1) HA local, 2) Pool brasileiro, 3) Google
   configTime(NTP_TIMEZONE * 3600, 0, NTP_SERVER, "pool.ntp.br", "time.google.com");
 
@@ -90,22 +90,22 @@ void setup()
 String getISOTimestamp()
 {
   time_t now = time(nullptr);
-  
+
   // Se não sincronizou ainda, retornar uptime
   if (now < 100000)
   {
     return "uptime:" + String(millis() / 1000) + "s";
   }
-  
+
   struct tm timeinfo;
   localtime_r(&now, &timeinfo);
-  
+
   char buffer[30];
   strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-  
+
   // Adicionar timezone offset
   sprintf(buffer + strlen(buffer), "%+03d:00", NTP_TIMEZONE);
-  
+
   return String(buffer);
 }
 

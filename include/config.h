@@ -15,7 +15,6 @@
 #define TELEMETRY_INTERVAL 30000 // 30 segundos (otimizado para performance)
 
 /* ================= NTP ================= */
-#define NTP_SERVER "10.0.0.84"     // Servidor NTP local (Home Assistant)
-#define NTP_TIMEZONE -3            // Timezone offset em horas (UTC-3 para Brasil)
-#define NTP_UPDATE_INTERVAL 3600   // Atualizar a cada 1 hora (3600s)
-
+#define NTP_SERVER "10.0.0.84"   // Servidor NTP local (Home Assistant)
+#define NTP_TIMEZONE -3          // Timezone offset em horas (UTC-3 para Brasil)
+#define NTP_UPDATE_INTERVAL 3600 // Atualizar a cada 1 hora (3600s)

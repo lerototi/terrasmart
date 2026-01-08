@@ -13,22 +13,22 @@ static BaseSensor *g_sensor = nullptr;
 static String getISOTimestamp()
 {
     time_t now = time(nullptr);
-    
+
     // Se não sincronizou ainda, retornar uptime
     if (now < 100000)
     {
         return "uptime:" + String(millis() / 1000) + "s";
     }
-    
+
     struct tm timeinfo;
     localtime_r(&now, &timeinfo);
-    
+
     char buffer[30];
     strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-    
+
     // Adicionar timezone offset (definido em config.h)
     sprintf(buffer + strlen(buffer), "%+03d:00", NTP_TIMEZONE);
-    
+
     return String(buffer);
 }
 
