@@ -65,6 +65,13 @@ void setup()
 
   Serial.println("[BOOT] WiFi conectado! Iniciando MQTT...");
   setupMQTT(config);
+
+  // Inicializar sensor
+  if (!initSensor())
+  {
+    Serial.println("[BOOT] ⚠ Aviso: Sensor não inicializado, mas continuando...");
+  }
+
   Serial.println("[BOOT] Setup completo!\n");
 }
 

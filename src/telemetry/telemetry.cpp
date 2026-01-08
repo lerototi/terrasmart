@@ -2,26 +2,122 @@
 #include "telemetry.h"
 #include "../mqtt/mqtt_manager.h"
 #include "config.h"
+#include "../sensors/sensor_base.h"
+#include "../include/device_config.h"
 
-void sendTelemetry() {
-  // Verificar se MQTT está conectado
-  if (!mqttIsConnected()) {
-    Serial.println("[TELEMETRY] ✗ Não enviado - MQTT desconectado");
-    return;
-  }
+// Instância global do sensor
+static BaseSensor *g_sensor = nullptr;
 
-  float temperature = random(200, 320) / 10.0;
+bool initSensor()
+{
+    if (g_sensor)
+    {
+        return true; // Já inicializado
+    }
 
-  String payload = "{";
-  payload += "\"temperature\":" + String(temperature, 1) + ",";
-  payload += "\"uptime\":" + String(millis() / 1000) + ",";
-  payload += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
-  payload += "\"rssi\":" + String(WiFi.RSSI());
-  payload += "}";
+    Serial.println("[TELEMETRY] Inicializando sensor...");
 
-  publishMessage(MQTT_TELEMETRY_TOPIC, payload.c_str());
+    g_sensor = SensorFactory::createSensor((SensorType)SENSOR_TYPE);
+    if (!g_sensor)
+    {
+        Serial.println("[TELEMETRY] ✗ Falha ao criar sensor");
+        return false;
+    }
 
-  Serial.print("[TELEMETRY] ✓ ");
-  Serial.println(payload);
+    if (!g_sensor->begin())
+    {
+        Serial.println("[TELEMETRY] ✗ Falha ao inicializar sensor");
+        SensorFactory::destroySensor(g_sensor);
+        g_sensor = nullptr;
+        return false;
+    }
+
+    Serial.printf("[TELEMETRY] ✓ Sensor inicializado: %s\n", g_sensor->getName());
+    return true;
 }
 
+void sendTelemetry()
+{
+    // Verificar se MQTT está conectado
+    if (!mqttIsConnected())
+    {
+        Serial.println("[TELEMETRY] ✗ Não enviado - MQTT desconectado");
+        return;
+    }
+
+    // Inicializar sensor se necessário
+    if (!g_sensor && !initSensor())
+    {
+        Serial.println("[TELEMETRY] ✗ Não enviado - sensor não disponível");
+        return;
+    }
+
+    // Ler dados do sensor
+    SensorData data = g_sensor->read();
+    if (!data.valid)
+    {
+        Serial.println("[TELEMETRY] ✗ Não enviado - dados do sensor inválidos");
+        return;
+    }
+
+    // Criar timestamp ISO 8601
+    char timestamp[25];
+    time_t now = time(nullptr);
+    struct tm *timeinfo = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S.000Z", timeinfo);
+
+    // Obter IP do dispositivo
+    String ipAddress = WiFi.localIP().toString();
+
+    // Payload estruturado: separação entre device info e readings
+    String payload = "{";
+
+    // === DEVICE: Informações do hardware e status ===
+    payload += "\"device\":{";
+    payload += "\"id\":\"" + String(DEVICE_ID) + "\",";
+    payload += "\"type\":\"" + String(g_sensor->getName()) + "\",";
+    payload += "\"uptime\":" + String(millis() / 1000) + ",";
+    payload += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
+    payload += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+    payload += "\"ip\":\"" + ipAddress + "\"";
+    payload += "},";
+
+    // === READINGS: Array dinâmico de leituras ===
+    payload += "\"readings\":[";
+
+    // Leitura 1: Temperatura
+    if (data.temperature != 0)
+    {
+        payload += "{";
+        payload += "\"type\":\"temperature\",";
+        payload += "\"value\":" + String(data.temperature, 1) + ",";
+        payload += "\"unit\":\"°C\"";
+        payload += "}";
+    }
+
+    // Leitura 2: Umidade (se disponível)
+    if (data.humidity != 0)
+    {
+        if (data.temperature != 0)
+            payload += ",";
+        payload += "{";
+        payload += "\"type\":\"humidity\",";
+        payload += "\"value\":" + String(data.humidity, 1) + ",";
+        payload += "\"unit\":\"%\"";
+        payload += "}";
+    }
+
+    payload += "],";
+
+    // === TIMESTAMP: Momento da coleta ===
+    payload += "\"timestamp\":\"" + String(timestamp) + "\"";
+
+    payload += "}";
+
+    publishMessage(MQTT_TELEMETRY_TOPIC, payload.c_str());
+
+    Serial.print("[TELEMETRY] ✓ Enviado para ");
+    Serial.print(MQTT_TELEMETRY_TOPIC);
+    Serial.print(": ");
+    Serial.println(payload);
+}
