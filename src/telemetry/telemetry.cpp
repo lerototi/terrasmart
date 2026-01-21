@@ -89,9 +89,9 @@ void sendTelemetry(TelemetryTrigger trigger)
 
     // Obter IP do dispositivo
     String ipAddress = WiFi.localIP().toString();
-    
+
     // String do tipo de trigger
-    const char* triggerType = (trigger == TRIGGER_CHANGE) ? "change_detected" : "heartbeat";
+    const char *triggerType = (trigger == TRIGGER_CHANGE) ? "change_detected" : "heartbeat";
 
     // Payload estruturado: separação entre device info e readings
     String payload = "{";
@@ -135,7 +135,7 @@ void sendTelemetry(TelemetryTrigger trigger)
 
     // === TIMESTAMP: Momento da coleta ===
     payload += "\"timestamp\":\"" + String(timestamp) + "\",";
-    
+
     // === TRIGGER: Tipo de envio (mudança ou heartbeat) ===
     payload += "\"trigger\":\"" + String(triggerType) + "\"";
 
@@ -156,12 +156,12 @@ SensorData readSensor()
     {
         return SensorData(0, 0, 0, false);
     }
-    
+
     return g_sensor->read();
 }
 
 // Função para obter instância do sensor
-BaseSensor* getSensor()
+BaseSensor *getSensor()
 {
     if (!g_sensor)
     {

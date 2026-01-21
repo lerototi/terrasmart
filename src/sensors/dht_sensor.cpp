@@ -68,7 +68,7 @@ SensorData DHT22Sensor::read()
     static SensorData lastValidData = SensorData(0, 0, 0, false);
 
     unsigned long now = millis();
-    
+
     // IMPORTANTE: Apenas retornar cache se passou MENOS de 2 segundos
     // Se passou 2s ou mais, SEMPRE fazer nova leitura
     if (now - lastReadTime < 2000 && lastValidData.valid)
@@ -91,7 +91,7 @@ SensorData DHT22Sensor::read()
     if (isnan(temperature) || isnan(humidity))
     {
         Serial.println("[DHT22] ✗ Leitura inválida (NaN)");
-        
+
         // Se muitas leituras NaN, reinicializar
         identicalReadings++;
         if (identicalReadings >= 5)
@@ -100,7 +100,7 @@ SensorData DHT22Sensor::read()
             reinitialize();
             identicalReadings = 0;
         }
-        
+
         return SensorData(0, 0, 0, false);
     }
 
@@ -119,22 +119,22 @@ SensorData DHT22Sensor::read()
 
     // === DETECÇÃO DE SENSOR TRAVADO ===
     // Verificar se os valores são EXATAMENTE iguais às últimas leituras
-    if (abs(temperature - lastReadTemperature) < 0.01 && 
+    if (abs(temperature - lastReadTemperature) < 0.01 &&
         abs(humidity - lastReadHumidity) < 0.01)
     {
         identicalReadings++;
-        
+
         // Se 15 leituras idênticas (30 segundos), sensor pode estar travado
         if (identicalReadings >= 15)
         {
-            Serial.printf("[DHT22] ⚠ SENSOR TRAVADO! %d leituras idênticas: %.1f°C / %.1f%%\n", 
+            Serial.printf("[DHT22] ⚠ SENSOR TRAVADO! %d leituras idênticas: %.1f°C / %.1f%%\n",
                           identicalReadings, temperature, humidity);
             Serial.println("[DHT22] 🔄 Reinicializando sensor...");
-            
+
             reinitialize();
             identicalReadings = 0;
             reinitializeAttempts++;
-            
+
             // Se já tentou reinicializar 3 vezes e continua travado, resetar ESP
             if (reinitializeAttempts >= 3)
             {
@@ -142,8 +142,8 @@ SensorData DHT22Sensor::read()
                 Serial.println("║  ⚠️  SENSOR CONTINUA TRAVADO APÓS 3 TENTATIVAS ║");
                 Serial.println("║  🔄  REINICIANDO ESP8266 EM 5 SEGUNDOS...     ║");
                 Serial.println("╚═══════════════════════════════════════════════╝\n");
-                
-                delay(5000); // Dar tempo para ver a mensagem
+
+                delay(5000);   // Dar tempo para ver a mensagem
                 ESP.restart(); // Reiniciar ESP8266 completamente
             }
         }
@@ -154,7 +154,7 @@ SensorData DHT22Sensor::read()
         identicalReadings = 0;
         reinitializeAttempts = 0; // Reset também o contador de reinicializações
     }
-    
+
     // Atualizar últimas leituras
     lastReadTemperature = temperature;
     lastReadHumidity = humidity;
@@ -184,17 +184,17 @@ bool DHT22Sensor::hasSignificantChange(const SensorData &current)
     {
         return false;
     }
-    
+
     // Primeira leitura sempre envia
     if (firstReading)
     {
         return true;
     }
-    
+
     // Verificar se houve mudança significativa
     float tempDiff = abs(current.temperature - lastSentTemperature);
     float humDiff = abs(current.humidity - lastSentHumidity);
-    
+
     return (tempDiff >= TEMP_CHANGE_THRESHOLD || humDiff >= HUMIDITY_CHANGE_THRESHOLD);
 }
 
@@ -215,25 +215,25 @@ void DHT22Sensor::updateLastSent(const SensorData &data)
 void DHT22Sensor::reinitialize()
 {
     Serial.println("[DHT22] ⚙️ Reinicializando sensor...");
-    
+
     // Destruir instância atual
     if (dht)
     {
         delete dht;
         dht = nullptr;
     }
-    
+
     delay(500); // Dar tempo ao sensor para resetar
-    
+
     // Recriar instância
     dht = new DHT(pin, DHT22);
     dht->begin();
     delay(2000); // DHT22 precisa de tempo para estabilizar
-    
+
     // Testar leitura
     float temp = dht->readTemperature();
     float hum = dht->readHumidity();
-    
+
     if (isnan(temp) || isnan(hum))
     {
         Serial.println("[DHT22] ⚠ Reinicialização falhou");

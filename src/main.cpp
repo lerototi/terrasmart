@@ -172,46 +172,46 @@ void loop()
 
     // Telemetria por evento: ler sensor frequentemente mas enviar só quando houver mudança
     unsigned long now = millis();
-    
+
     if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
     {
       lastSensorRead = now;
-      
+
       SensorData data = readSensor();
-      
+
       if (!data.valid)
       {
         // Se leitura inválida, tentar novamente no próximo ciclo
         return;
       }
-      
+
       // Obter sensor para verificar mudanças
-      BaseSensor* sensor = getSensor();
+      BaseSensor *sensor = getSensor();
       if (!sensor)
       {
         return;
       }
-      
+
       // Cast para DHT22Sensor para acessar métodos específicos
-      DHT22Sensor* dhtSensor = static_cast<DHT22Sensor*>(sensor);
-      
+      DHT22Sensor *dhtSensor = static_cast<DHT22Sensor *>(sensor);
+
       // Verificar se houve mudança significativa ou se passou do intervalo de heartbeat
       bool hasChange = dhtSensor->hasSignificantChange(data);
       bool forceHeartbeat = (now - lastTelemetry >= TELEMETRY_FORCE_INTERVAL);
-      
+
       if (hasChange || forceHeartbeat)
       {
         lastTelemetry = now;
-        
+
         // Definir tipo de trigger
         TelemetryTrigger trigger = hasChange ? TRIGGER_CHANGE : TRIGGER_HEARTBEAT;
         sendTelemetry(trigger);
-        
+
         dhtSensor->updateLastSent(data);
-        
+
         if (hasChange)
         {
-          Serial.printf("[Telemetry] Mudança detectada - Temp: %.1f°C, Hum: %.1f%%\n", 
+          Serial.printf("[Telemetry] Mudança detectada - Temp: %.1f°C, Hum: %.1f%%\n",
                         data.temperature, data.humidity);
         }
         else
