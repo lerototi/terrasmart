@@ -9,7 +9,7 @@
 #include "button_handler.h"
 #include "setup_manager.h"
 #include "sensors/sensor_base.h"
-#include "sensors/dht_sensor.h"
+#include "sensors/a02yyuw_sensor.h"
 
 unsigned long lastSensorRead = 0;
 unsigned long lastTelemetry = 0;
@@ -192,11 +192,11 @@ void loop()
         return;
       }
 
-      // Cast para DHT22Sensor para acessar métodos específicos
-      DHT22Sensor *dhtSensor = static_cast<DHT22Sensor *>(sensor);
+      // Cast para A02YYUWSensor para acessar métodos específicos
+      A02YYUWSensor *ultrasonicSensor = static_cast<A02YYUWSensor *>(sensor);
 
       // Verificar se houve mudança significativa ou se passou do intervalo de heartbeat
-      bool hasChange = dhtSensor->hasSignificantChange(data);
+      bool hasChange = ultrasonicSensor->hasSignificantChange(data);
       bool forceHeartbeat = (now - lastTelemetry >= TELEMETRY_FORCE_INTERVAL);
 
       if (hasChange || forceHeartbeat)
@@ -207,12 +207,12 @@ void loop()
         TelemetryTrigger trigger = hasChange ? TRIGGER_CHANGE : TRIGGER_HEARTBEAT;
         sendTelemetry(trigger);
 
-        dhtSensor->updateLastSent(data);
+        ultrasonicSensor->updateLastSent(data);
 
         if (hasChange)
         {
-          Serial.printf("[Telemetry] Mudança detectada - Temp: %.1f°C, Hum: %.1f%%\n",
-                        data.temperature, data.humidity);
+          Serial.printf("[Telemetry] Mudança detectada - Nível: %.1f%%, Distância: %.1fcm\n",
+                        data.temperature, data.distance);
         }
         else
         {

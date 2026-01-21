@@ -14,16 +14,16 @@
 // #define MQTT_TOPIC_PREFIX "home/sensors/temperature"
 
 // Dispositivo: Monitor de Caixa d'Água
-// #define DEVICE_TYPE_WATER_TANK
-// #define DEVICE_NAME "Caixa_Agua_Principal"
-// #define DEVICE_LOCATION "Telhado"
-// #define MQTT_TOPIC_PREFIX "home/sensors/water_tank"
+#define DEVICE_TYPE_WATER_TANK
+#define DEVICE_NAME "Caixa_Agua_Principal"
+#define DEVICE_LOCATION "Reservatorio"
+#define MQTT_TOPIC_PREFIX "home/sensors/water_tank"
 
 // Dispositivo: Monitor de Umidade
-#define DEVICE_TYPE_HUMIDITY
-#define DEVICE_NAME "Jardim_Umidade"
-#define DEVICE_LOCATION "Jardim"
-#define MQTT_TOPIC_PREFIX "home/sensors/humidity"
+// #define DEVICE_TYPE_HUMIDITY
+// #define DEVICE_NAME "Jardim_Umidade"
+// #define DEVICE_LOCATION "Jardim"
+// #define MQTT_TOPIC_PREFIX "home/sensors/humidity"
 
 // =============================================================================
 // CONFIGURAÇÃO AUTOMÁTICA DO SENSOR BASEADO NO TIPO DE DISPOSITIVO
@@ -36,9 +36,11 @@
 
 #elif defined(DEVICE_TYPE_WATER_TANK)
 #define SENSOR_TYPE 2 // UltrasonicSensor
-#define SENSOR_NAME "Sensor Ultrassônico JSN-SR04M"
-#define ULTRASONIC_TRIG_PIN 13 // D7
-#define ULTRASONIC_ECHO_PIN 12 // D6
+#define SENSOR_NAME "Sensor Ultrassônico A02YYUW"
+#define ULTRASONIC_RX_PIN 12  // D6 (GPIO12)
+#define ULTRASONIC_TX_PIN 13  // D7 (GPIO13)
+#define TANK_HEIGHT_CM 200.0f // Altura do reservatório em cm
+#define SENSOR_OFFSET_CM 5.0f // Distância do sensor até o topo quando cheio
 #define SENSOR_PINS_CONFIGURED true
 
 #elif defined(DEVICE_TYPE_HUMIDITY)

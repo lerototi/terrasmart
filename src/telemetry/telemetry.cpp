@@ -109,20 +109,32 @@ void sendTelemetry(TelemetryTrigger trigger)
     // === READINGS: Array dinâmico de leituras ===
     payload += "\"readings\":[";
 
-    // Leitura 1: Temperatura
+    // Leitura 1: Nível do reservatório (%) - armazenado em temperature
     if (data.temperature != 0)
     {
         payload += "{";
-        payload += "\"type\":\"temperature\",";
+        payload += "\"type\":\"water_level\",";
         payload += "\"value\":" + String(data.temperature, 1) + ",";
-        payload += "\"unit\":\"°C\"";
+        payload += "\"unit\":\"%\"";
         payload += "}";
     }
 
-    // Leitura 2: Umidade (se disponível)
-    if (data.humidity != 0)
+    // Leitura 2: Distância do sensor (cm) - armazenado em distance
+    if (data.distance != 0)
     {
         if (data.temperature != 0)
+            payload += ",";
+        payload += "{";
+        payload += "\"type\":\"distance\",";
+        payload += "\"value\":" + String(data.distance, 1) + ",";
+        payload += "\"unit\":\"cm\"";
+        payload += "}";
+    }
+
+    // Leitura 3: Umidade (se disponível, para DHT22)
+    if (data.humidity != 0)
+    {
+        if (data.temperature != 0 || data.distance != 0)
             payload += ",";
         payload += "{";
         payload += "\"type\":\"humidity\",";
