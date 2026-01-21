@@ -8,7 +8,10 @@
 #include "captive/captive_portal.h"
 #include "button_handler.h"
 #include "setup_manager.h"
+#include "sensors/sensor_base.h"
+#include "sensors/dht_sensor.h"
 
+unsigned long lastSensorRead = 0;
 unsigned long lastTelemetry = 0;
 unsigned long lastNTPSync = 0;
 bool ntpSynced = false;
@@ -167,11 +170,55 @@ void loop()
       configTime(NTP_TIMEZONE * 3600, 0, NTP_SERVER, "pool.ntp.br", "time.google.com");
     }
 
-    // Enviar telemetria periodicamente
-    if (millis() - lastTelemetry > TELEMETRY_INTERVAL)
+    // Telemetria por evento: ler sensor frequentemente mas enviar só quando houver mudança
+    unsigned long now = millis();
+    
+    if (now - lastSensorRead >= SENSOR_READ_INTERVAL)
     {
-      lastTelemetry = millis();
-      sendTelemetry();
+      lastSensorRead = now;
+      
+      SensorData data = readSensor();
+      
+      if (!data.valid)
+      {
+        // Se leitura inválida, tentar novamente no próximo ciclo
+        return;
+      }
+      
+      // Obter sensor para verificar mudanças
+      BaseSensor* sensor = getSensor();
+      if (!sensor)
+      {
+        return;
+      }
+      
+      // Cast para DHT22Sensor para acessar métodos específicos
+      DHT22Sensor* dhtSensor = static_cast<DHT22Sensor*>(sensor);
+      
+      // Verificar se houve mudança significativa ou se passou do intervalo de heartbeat
+      bool hasChange = dhtSensor->hasSignificantChange(data);
+      bool forceHeartbeat = (now - lastTelemetry >= TELEMETRY_FORCE_INTERVAL);
+      
+      if (hasChange || forceHeartbeat)
+      {
+        lastTelemetry = now;
+        
+        // Definir tipo de trigger
+        TelemetryTrigger trigger = hasChange ? TRIGGER_CHANGE : TRIGGER_HEARTBEAT;
+        sendTelemetry(trigger);
+        
+        dhtSensor->updateLastSent(data);
+        
+        if (hasChange)
+        {
+          Serial.printf("[Telemetry] Mudança detectada - Temp: %.1f°C, Hum: %.1f%%\n", 
+                        data.temperature, data.humidity);
+        }
+        else
+        {
+          Serial.println("[Telemetry] Heartbeat forçado (5min)");
+        }
+      }
     }
 
     yield(); // Dar tempo ao watchdog

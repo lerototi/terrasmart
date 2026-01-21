@@ -60,7 +60,7 @@ bool initSensor()
     return true;
 }
 
-void sendTelemetry()
+void sendTelemetry(TelemetryTrigger trigger)
 {
     // Verificar se MQTT está conectado
     if (!mqttIsConnected())
@@ -89,6 +89,9 @@ void sendTelemetry()
 
     // Obter IP do dispositivo
     String ipAddress = WiFi.localIP().toString();
+    
+    // String do tipo de trigger
+    const char* triggerType = (trigger == TRIGGER_CHANGE) ? "change_detected" : "heartbeat";
 
     // Payload estruturado: separação entre device info e readings
     String payload = "{";
@@ -131,7 +134,10 @@ void sendTelemetry()
     payload += "],";
 
     // === TIMESTAMP: Momento da coleta ===
-    payload += "\"timestamp\":\"" + String(timestamp) + "\"";
+    payload += "\"timestamp\":\"" + String(timestamp) + "\",";
+    
+    // === TRIGGER: Tipo de envio (mudança ou heartbeat) ===
+    payload += "\"trigger\":\"" + String(triggerType) + "\"";
 
     payload += "}";
 
@@ -139,6 +145,27 @@ void sendTelemetry()
 
     Serial.print("[TELEMETRY] ✓ Enviado para ");
     Serial.print(MQTT_TELEMETRY_TOPIC);
-    Serial.print(": ");
+    Serial.printf(" [%s]: ", triggerType);
     Serial.println(payload);
+}
+
+// Função para ler sensor sem enviar telemetria
+SensorData readSensor()
+{
+    if (!g_sensor && !initSensor())
+    {
+        return SensorData(0, 0, 0, false);
+    }
+    
+    return g_sensor->read();
+}
+
+// Função para obter instância do sensor
+BaseSensor* getSensor()
+{
+    if (!g_sensor)
+    {
+        initSensor();
+    }
+    return g_sensor;
 }
