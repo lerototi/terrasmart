@@ -22,10 +22,10 @@ BaseSensor *SensorFactory::createSensor(SensorType type)
     case SENSOR_ULTRASONIC:
 #if defined(ULTRASONIC_RX_PIN) && defined(ULTRASONIC_TX_PIN)
         // A02YYUW: RX=D6 (GPIO12), TX=D7 (GPIO13)
-        Serial.printf("[FACTORY] Criando sensor A02YYUW (RX:%d, TX:%d)\n", 
+        Serial.printf("[FACTORY] Criando sensor A02YYUW (RX:%d, TX:%d)\n",
                       ULTRASONIC_RX_PIN, ULTRASONIC_TX_PIN);
-        return new A02YYUWSensor(ULTRASONIC_RX_PIN, ULTRASONIC_TX_PIN, 
-                                  TANK_HEIGHT_CM, SENSOR_OFFSET_CM);
+        return new A02YYUWSensor(ULTRASONIC_RX_PIN, ULTRASONIC_TX_PIN,
+                                 TANK_HEIGHT_CM, SENSOR_OFFSET_CM);
 #else
         Serial.println("[FACTORY] ✗ Pinos do sensor ultrassônico não definidos");
         return nullptr;

@@ -42,7 +42,7 @@ bool A02YYUWSensor::begin()
     Serial.printf("[A02YYUW] Inicializando sensor nos pinos RX:GPIO%d (D%d), TX:GPIO%d (D%d)\n",
                   rxPin, rxPin == 12 ? 6 : (rxPin == 13 ? 7 : rxPin),
                   txPin, txPin == 12 ? 6 : (txPin == 13 ? 7 : txPin));
-    
+
     Serial.printf("[A02YYUW] Configuração: Altura reservatório=%.1fcm, Offset sensor=%.1fcm\n",
                   tankHeight, sensorOffset);
 
@@ -57,7 +57,7 @@ bool A02YYUWSensor::begin()
         if (readDistance(distance))
         {
             float level = calculateLevel(distance);
-            Serial.printf("[A02YYUW] ✓ Inicializado - Distância: %.1fcm, Nível: %.1f%%\n", 
+            Serial.printf("[A02YYUW] ✓ Inicializado - Distância: %.1fcm, Nível: %.1f%%\n",
                           distance, level);
             initialized = true;
             lastReadDistance = distance;
@@ -79,32 +79,32 @@ bool A02YYUWSensor::readDistance(float &distance)
     {
         serial->read();
     }
-    
+
     delay(100); // Aguardar nova leitura do sensor
-    
+
     // A02YYUW envia 4 bytes: [0xFF] [H_DATA] [L_DATA] [CHECKSUM]
     if (serial->available() >= 4)
     {
         buffer[0] = serial->read();
-        
+
         // Verificar header (0xFF)
         if (buffer[0] == 0xFF)
         {
             buffer[1] = serial->read();
             buffer[2] = serial->read();
             buffer[3] = serial->read();
-            
+
             // Verificar checksum: (0xFF + H_DATA + L_DATA) & 0xFF = CHECKSUM
             unsigned char sum = (buffer[0] + buffer[1] + buffer[2]) & 0xFF;
-            
+
             if (sum == buffer[3])
             {
                 // Calcular distância em mm
                 int distMm = (buffer[1] << 8) | buffer[2];
-                
+
                 // Converter para cm
                 distance = distMm / 10.0f;
-                
+
                 // Validar range (30cm - 450cm)
                 if (distance >= 30.0f && distance <= 450.0f)
                 {
@@ -123,7 +123,7 @@ bool A02YYUWSensor::readDistance(float &distance)
             }
         }
     }
-    
+
     return false;
 }
 
@@ -131,14 +131,16 @@ float A02YYUWSensor::calculateLevel(float distance)
 {
     // Nível (%) = 100 - ((distância - offset) / altura_tanque * 100)
     // Quanto menor a distância, maior o nível
-    
+
     float waterHeight = (distance - sensorOffset);
     float level = 100.0f - ((waterHeight / tankHeight) * 100.0f);
-    
+
     // Limitar entre 0% e 100%
-    if (level < 0.0f) level = 0.0f;
-    if (level > 100.0f) level = 100.0f;
-    
+    if (level < 0.0f)
+        level = 0.0f;
+    if (level > 100.0f)
+        level = 100.0f;
+
     return level;
 }
 
@@ -155,7 +157,7 @@ SensorData A02YYUWSensor::read()
     static SensorData lastValidData = SensorData(0, 0, 0, false);
 
     unsigned long now = millis();
-    
+
     if (now - lastReadTime < 2000 && lastValidData.valid)
     {
         return lastValidData;
@@ -167,7 +169,7 @@ SensorData A02YYUWSensor::read()
     if (!readDistance(distance))
     {
         Serial.println("[A02YYUW] ✗ Leitura inválida");
-        
+
         identicalReadings++;
         if (identicalReadings >= 5)
         {
@@ -175,7 +177,7 @@ SensorData A02YYUWSensor::read()
             reinitialize();
             identicalReadings = 0;
         }
-        
+
         return SensorData(0, 0, 0, false);
     }
 
@@ -185,24 +187,24 @@ SensorData A02YYUWSensor::read()
     if (abs(distance - lastReadDistance) < 0.5) // Menos de 0.5cm de diferença
     {
         identicalReadings++;
-        
+
         if (identicalReadings >= 15) // 30 segundos travado
         {
-            Serial.printf("[A02YYUW] ⚠ SENSOR TRAVADO! %d leituras idênticas: %.1fcm\n", 
+            Serial.printf("[A02YYUW] ⚠ SENSOR TRAVADO! %d leituras idênticas: %.1fcm\n",
                           identicalReadings, distance);
             Serial.println("[A02YYUW] 🔄 Reinicializando sensor...");
-            
+
             reinitialize();
             identicalReadings = 0;
             reinitializeAttempts++;
-            
+
             if (reinitializeAttempts >= 3)
             {
                 Serial.println("\n╔═══════════════════════════════════════════════╗");
                 Serial.println("║  ⚠️  SENSOR CONTINUA TRAVADO APÓS 3 TENTATIVAS ║");
                 Serial.println("║  🔄  REINICIANDO ESP8266 EM 5 SEGUNDOS...     ║");
                 Serial.println("╚═══════════════════════════════════════════════╝\n");
-                
+
                 delay(5000);
                 ESP.restart();
             }
@@ -213,7 +215,7 @@ SensorData A02YYUWSensor::read()
         identicalReadings = 0;
         reinitializeAttempts = 0;
     }
-    
+
     lastReadDistance = distance;
     lastSuccessfulRead = now;
 
@@ -246,18 +248,18 @@ bool A02YYUWSensor::hasSignificantChange(const SensorData &current)
     {
         return false;
     }
-    
+
     if (firstReading)
     {
         return true;
     }
-    
+
     // Verificar mudança significativa:
     // - Distância: >= 2cm (variação no nível da água)
     // - Nível: >= 1% (threshold de nível)
     float distDiff = abs(current.distance - lastSentDistance);
     float levelDiff = abs(current.temperature - lastSentLevel); // temperature = level%
-    
+
     return (distDiff >= 2.0f || levelDiff >= 1.0f);
 }
 
@@ -290,25 +292,25 @@ void A02YYUWSensor::setSensorOffset(float offsetCm)
 void A02YYUWSensor::reinitialize()
 {
     Serial.println("[A02YYUW] ⚙️ Reinicializando sensor...");
-    
+
     if (serial)
     {
         serial->end();
         delete serial;
         serial = nullptr;
     }
-    
+
     delay(500);
-    
+
     serial = new SoftwareSerial(rxPin, txPin);
     serial->begin(9600);
     delay(1000);
-    
+
     float distance;
     if (readDistance(distance))
     {
         float level = calculateLevel(distance);
-        Serial.printf("[A02YYUW] ✓ Sensor reinicializado - Distância: %.1fcm, Nível: %.1f%%\n", 
+        Serial.printf("[A02YYUW] ✓ Sensor reinicializado - Distância: %.1fcm, Nível: %.1f%%\n",
                       distance, level);
         initialized = true;
         identicalReadings = 0;
