@@ -1,7 +1,7 @@
 #pragma once
 
 /* ================= DEVICE ================= */
-#define DEVICE_ID "esp_sensor_01"
+#define DEVICE_ID "esp_watertank_main"
 
 /* ================= TOPICS ================= */
 #define MQTT_BASE_TOPIC "addon/esp/"

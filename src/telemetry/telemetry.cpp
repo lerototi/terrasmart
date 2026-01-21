@@ -110,7 +110,8 @@ void sendTelemetry(TelemetryTrigger trigger)
     payload += "\"readings\":[";
 
     // Leitura 1: Nível do reservatório (%) - armazenado em temperature
-    if (data.temperature != 0)
+    // SEMPRE enviar, mesmo que seja 0%
+    if (data.distance != 0) // Se tem distância, tem nível calculado
     {
         payload += "{";
         payload += "\"type\":\"water_level\",";
@@ -122,8 +123,7 @@ void sendTelemetry(TelemetryTrigger trigger)
     // Leitura 2: Distância do sensor (cm) - armazenado em distance
     if (data.distance != 0)
     {
-        if (data.temperature != 0)
-            payload += ",";
+        payload += ","; // Sempre tem vírgula porque water_level vem antes
         payload += "{";
         payload += "\"type\":\"distance\",";
         payload += "\"value\":" + String(data.distance, 1) + ",";

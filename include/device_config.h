@@ -39,7 +39,7 @@
 #define SENSOR_NAME "Sensor Ultrassônico A02YYUW"
 #define ULTRASONIC_RX_PIN 12  // D6 (GPIO12)
 #define ULTRASONIC_TX_PIN 13  // D7 (GPIO13)
-#define TANK_HEIGHT_CM 200.0f // Altura do reservatório em cm
+#define TANK_HEIGHT_CM 220.0f // Altura do reservatório em cm (ajustado para 220cm)
 #define SENSOR_OFFSET_CM 5.0f // Distância do sensor até o topo quando cheio
 #define SENSOR_PINS_CONFIGURED true
 
