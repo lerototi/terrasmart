@@ -17,10 +17,8 @@ A02YYUWSensor::A02YYUWSensor(uint8_t rx, uint8_t tx, float tankHeightCm, float o
     sensorOffset = offsetCm;
     lastSentDistance = 0.0f;
     lastSentLevel = 0.0f;
-    lastReadDistance = 0.0f;
-    identicalReadings = 0;
+    failedReadings = 0;
     lastSuccessfulRead = 0;
-    reinitializeAttempts = 0;
 }
 
 A02YYUWSensor::~A02YYUWSensor()
@@ -60,7 +58,6 @@ bool A02YYUWSensor::begin()
             Serial.printf("[A02YYUW] ✓ Inicializado - Distância: %.1fcm, Nível: %.1f%%\n",
                           distance, level);
             initialized = true;
-            lastReadDistance = distance;
             return true;
         }
         attempts++;
@@ -105,16 +102,8 @@ bool A02YYUWSensor::readDistance(float &distance)
                 // Converter para cm
                 distance = distMm / 10.0f;
 
-                // Validar range (30cm - 450cm)
-                if (distance >= 30.0f && distance <= 450.0f)
-                {
-                    return true;
-                }
-                else
-                {
-                    Serial.printf("[A02YYUW] ✗ Distância fora do range: %.1fcm\n", distance);
-                    return false;
-                }
+                // Retornar a leitura sem validação de range
+                return true;
             }
             else
             {
@@ -168,62 +157,29 @@ SensorData A02YYUWSensor::read()
     float distance;
     if (!readDistance(distance))
     {
-        Serial.println("[A02YYUW] ✗ Leitura inválida");
+        Serial.println("[A02YYUW] ✗ Erro de comunicação");
 
-        identicalReadings++;
-        if (identicalReadings >= 5)
+        failedReadings++;
+
+        // Se muitas falhas consecutivas, tentar reinicializar
+        if (failedReadings >= 10)
         {
-            Serial.println("[A02YYUW] 🔄 Muitas leituras inválidas - Reinicializando...");
+            Serial.println("[A02YYUW] 🔄 Muitas falhas de comunicação - Reinicializando...");
             reinitialize();
-            identicalReadings = 0;
+            failedReadings = 0;
         }
 
         return SensorData(0, 0, 0, false);
     }
 
     lastReadTime = now;
-
-    // === DETECÇÃO DE SENSOR TRAVADO ===
-    if (abs(distance - lastReadDistance) < 0.5) // Menos de 0.5cm de diferença
-    {
-        identicalReadings++;
-
-        if (identicalReadings >= 15) // 30 segundos travado
-        {
-            Serial.printf("[A02YYUW] ⚠ SENSOR TRAVADO! %d leituras idênticas: %.1fcm\n",
-                          identicalReadings, distance);
-            Serial.println("[A02YYUW] 🔄 Reinicializando sensor...");
-
-            reinitialize();
-            identicalReadings = 0;
-            reinitializeAttempts++;
-
-            if (reinitializeAttempts >= 3)
-            {
-                Serial.println("\n╔═══════════════════════════════════════════════╗");
-                Serial.println("║  ⚠️  SENSOR CONTINUA TRAVADO APÓS 3 TENTATIVAS ║");
-                Serial.println("║  🔄  REINICIANDO ESP8266 EM 5 SEGUNDOS...     ║");
-                Serial.println("╚═══════════════════════════════════════════════╝\n");
-
-                delay(5000);
-                ESP.restart();
-            }
-        }
-    }
-    else
-    {
-        identicalReadings = 0;
-        reinitializeAttempts = 0;
-    }
-
-    lastReadDistance = distance;
     lastSuccessfulRead = now;
+    failedReadings = 0; // Reset contador de falhas em leitura bem-sucedida
 
     // Calcular nível percentual
     float level = calculateLevel(distance);
 
-    // SensorData: temperature=0, humidity=0, distance=distance
-    // Usaremos o campo temperature para armazenar o nível (%)
+    // SensorData: temperature=level%, humidity=0, distance=distance
     lastValidData = SensorData(level, 0.0f, distance, true);
     return lastValidData;
 }
@@ -313,8 +269,7 @@ void A02YYUWSensor::reinitialize()
         Serial.printf("[A02YYUW] ✓ Sensor reinicializado - Distância: %.1fcm, Nível: %.1f%%\n",
                       distance, level);
         initialized = true;
-        identicalReadings = 0;
-        lastReadDistance = distance;
+        failedReadings = 0;
     }
     else
     {

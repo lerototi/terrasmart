@@ -24,11 +24,9 @@ private:
     float lastSentLevel;
     bool firstReading;
 
-    // Para detecção de sensor travado
-    float lastReadDistance;
-    int identicalReadings;
+    // Para detecção de erro de comunicação
+    int failedReadings;
     unsigned long lastSuccessfulRead;
-    int reinitializeAttempts;
 
     // Buffer de leitura
     unsigned char buffer[4];
@@ -37,7 +35,7 @@ private:
     bool readDistance(float &distance);
 
 public:
-    A02YYUWSensor(uint8_t rx, uint8_t tx, float tankHeightCm = 200.0f, float offsetCm = 5.0f);
+    A02YYUWSensor(uint8_t rx, uint8_t tx, float tankHeightCm = 200.0f, float offsetCm = 20.0f);
     ~A02YYUWSensor() override;
 
     bool begin() override;
