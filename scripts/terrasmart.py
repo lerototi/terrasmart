@@ -156,7 +156,7 @@ def patch_fdrs_espnow_packet_lengths(*_args, **_kwargs) -> None:
 
 
 def patch_fdrs_node_send_timeout(*_args, **_kwargs) -> None:
-    """Prevent a lost ESP-NOW callback from blocking a node forever."""
+    """Reset the ACK before sending and bound the wait for its callback."""
     project_dir = Path(env.subst("$PROJECT_DIR"))
     for header in project_dir.glob(
         ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_node.h"
@@ -168,9 +168,24 @@ def patch_fdrs_node_send_timeout(*_args, **_kwargs) -> None:
   esp_now_ack_flag = CRC_NULL;
   while (esp_now_ack_flag == CRC_NULL)
 """,
+            """  // Clear the previous result before the asynchronous send callback can run.
+  esp_now_ack_flag = CRC_NULL;
+  const unsigned long ackStart = millis();
+  esp_now_send(gatewayAddress, (uint8_t *)&fdrsData, data_count * sizeof(DataReading));
+  while (esp_now_ack_flag == CRC_NULL && millis() - ackStart < 1000)
+""",
+            1,
+        )
+        source = source.replace(
             """  esp_now_send(gatewayAddress, (uint8_t *)&fdrsData, data_count * sizeof(DataReading));
   esp_now_ack_flag = CRC_NULL;
   const unsigned long ackStart = millis();
+  while (esp_now_ack_flag == CRC_NULL && millis() - ackStart < 1000)
+""",
+            """  // Clear the previous result before the asynchronous send callback can run.
+  esp_now_ack_flag = CRC_NULL;
+  const unsigned long ackStart = millis();
+  esp_now_send(gatewayAddress, (uint8_t *)&fdrsData, data_count * sizeof(DataReading));
   while (esp_now_ack_flag == CRC_NULL && millis() - ackStart < 1000)
 """,
             1,
