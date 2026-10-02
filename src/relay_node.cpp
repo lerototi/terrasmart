@@ -55,6 +55,13 @@ void registerWithGateway() {
 }
 
 void fdrsReceiveCallback(DataReading data) {
+  Serial.print("DataReading recebido: id=");
+  Serial.print(data.id);
+  Serial.print(" type=");
+  Serial.print(data.t);
+  Serial.print(" data=");
+  Serial.println(data.d);
+
   if (data.t == 0) { // SET command
     const bool enabled = data.d >= 0.5f;
 
@@ -110,10 +117,11 @@ void loop() {
 
   if (statusReportPending) {
     statusReportPending = false;
+    Serial.println("Enviando confirmacao de estado dos reles...");
     if (sendFDRS()) {
-      DBG("Relay status sent.");
+      Serial.println("Confirmacao de estado enviada ao gateway.");
     } else {
-      DBG("Relay status failed.");
+      Serial.println("Falha ao enviar confirmacao; renovando registro com gateway.");
       gatewayRegistered = false;
       nextRegistrationAttempt = millis() + REGISTRATION_RETRY_INTERVAL_MS;
     }
