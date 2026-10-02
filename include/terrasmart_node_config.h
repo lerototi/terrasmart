@@ -4,6 +4,8 @@
 
 // Each node should use its own reading ID. The ESP32 gateway is 0x01.
 #define READING_ID 1
+#define TERRASMART_OTA_DEVICE_ID 0x11
+#define TERRASMART_OTA_NODE
 #define GTWY_MAC 0x01
 #define FDRS_ESPNOW_CHANNEL 1
 

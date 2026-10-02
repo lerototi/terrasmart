@@ -5,6 +5,9 @@
 // The gateway uses address 0x01. Keep this value aligned with UNIT_MAC.
 #define GTWY_MAC 0x01
 #define READING_ID 2
+#define FDRS_ESPNOW_CHANNEL 1
+#define TERRASMART_OTA_DEVICE_ID 0x12
+#define TERRASMART_OTA_NODE
 
 #define USE_ESPNOW
 #define FDRS_DEBUG

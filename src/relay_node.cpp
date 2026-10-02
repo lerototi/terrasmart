@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "terrasmart_relay_config.h"
+#include "terrasmart_ota.h"
 #include <fdrs_node.h>
 
 namespace {
@@ -110,6 +111,7 @@ void setup() {
 
 void loop() {
   loopFDRS();
+  terrasSmartOtaServiceEspNow();
 
   if (static_cast<int32_t>(millis() - nextRegistrationAttempt) >= 0) {
     registerWithGateway();

@@ -2,6 +2,8 @@
 
 // ESP-NOW gateway: radio on this ESP32, dedicated UART toward the MQTT gateway.
 #define UNIT_MAC 0x01
+#define TERRASMART_OTA_GATEWAY_ID 0x01
+#define TERRASMART_OTA_ESPNOW_GATEWAY
 #define FDRS_ESPNOW_CHANNEL 1
 #define ESPNOW_NEIGHBOR_1 0x00
 #define ESPNOW_NEIGHBOR_2 0x00

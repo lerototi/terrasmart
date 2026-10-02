@@ -11,6 +11,15 @@ const char *fdrs_runtime_ap_ssid = nullptr;
 const char *fdrs_runtime_ap_password = "terrasmart";
 #endif
 
+#if defined(TERRASMART_OTA_MQTT)
+void terrasSmartOtaServiceUart();
+#endif
+
+#if defined(TERRASMART_OTA_MQTT)
+inline void terrasSmartOtaLoop();
+#endif
+
+#include "terrasmart_ota.h"
 #include <fdrs_gateway.h>
 
 #if !defined(LED_BUILTIN)
@@ -439,6 +448,9 @@ void setup() {
   applyConfiguration();
 #endif
   beginFDRS();
+#if defined(TERRASMART_OTA_MQTT)
+  Serial1.setTimeout(20);
+#endif
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   networkInitialized = true;
   startWebServer();
@@ -454,6 +466,9 @@ void loop() {
   maintainMdns();
 #endif
   loopFDRS();
+#if defined(TERRASMART_OTA_MQTT)
+  terrasSmartOtaLoop();
+#endif
   maintainMqttStatus();
 
   // The dedicated FDRS UART is reserved for JSON, so use the built-in LED

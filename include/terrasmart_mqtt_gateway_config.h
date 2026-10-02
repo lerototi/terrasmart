@@ -1,4 +1,13 @@
 #pragma once
+#include "terrasmart_ota_config.h"
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+#ifndef TERRASMART_OTA_MQTT
+#define TERRASMART_OTA_MQTT
+#endif
+#endif
+#if defined(ESP8266) && !defined(FDRS_OTA_PASSWORD)
+#define FDRS_OTA_PASSWORD TERRASMART_OTA_PASSWORD
+#endif
 
 // Local credentials belong in the ignored secrets header.
 // The fallback values keep a clean clone compilable until that file is created.

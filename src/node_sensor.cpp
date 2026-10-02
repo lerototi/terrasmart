@@ -1,6 +1,9 @@
 #include <Arduino.h>
+#if defined(ESP8266)
 #include <SoftwareSerial.h>
+#endif
 #include "terrasmart_node_config.h"
+#include "terrasmart_ota.h"
 #include <fdrs_node.h>
 
 namespace {
@@ -9,7 +12,13 @@ constexpr uint8_t A02YYUW_HEADER = 0xFF;
 constexpr uint32_t SENSOR_READ_TIMEOUT_MS = 100;
 constexpr uint8_t DEBUG_FRAME_BYTES = 16;
 
+#if defined(ESP8266)
 SoftwareSerial sensorSerial(A02YYUW_RX_PIN, A02YYUW_TX_PIN);
+#elif defined(ESP32)
+HardwareSerial sensorSerial(1);
+#else
+HardwareSerial &sensorSerial = Serial1;
+#endif
 
 uint8_t debugBytes[DEBUG_FRAME_BYTES];
 uint8_t debugByteCount = 0;
@@ -101,8 +110,12 @@ void setup() {
   Serial.println(A02YYUW_TX_PIN);
   Serial.print("Sensor baud: ");
   Serial.println(A02YYUW_BAUD);
+#if defined(ESP8266)
   sensorSerial.begin(A02YYUW_BAUD);
   sensorSerial.listen();
+#else
+  sensorSerial.begin(A02YYUW_BAUD, SERIAL_8N1, A02YYUW_RX_PIN, A02YYUW_TX_PIN);
+#endif
   beginFDRS();
   Serial.println("A02YYUW serial initialized");
   Serial.println("Pinging ESP-NOW gateway...");
@@ -111,21 +124,26 @@ void setup() {
 }
 
 void loop() {
-  uint16_t distanceMm;
-  if (readDistanceMillimeters(distanceMm)) {
-    printSensorBytes();
-    DBG("A02YYUW distance: " + String(distanceMm) + " mm");
-    loadFDRS(static_cast<float>(distanceMm), LEVEL_T);
+  static uint32_t nextSensorRead = 0;
+  loopFDRS();
+  terrasSmartOtaServiceEspNow();
+  if (static_cast<int32_t>(millis() - nextSensorRead) >= 0) {
+    nextSensorRead = millis() + SEND_INTERVAL_SECONDS * 1000UL;
+    uint16_t distanceMm;
+    if (readDistanceMillimeters(distanceMm)) {
+      printSensorBytes();
+      DBG("A02YYUW distance: " + String(distanceMm) + " mm");
+      loadFDRS(static_cast<float>(distanceMm), LEVEL_T);
 
-    if (sendFDRS()) {
-      DBG("FDRS packet sent.");
+      if (sendFDRS()) {
+        DBG("FDRS packet sent.");
+      } else {
+        DBG("FDRS packet failed.");
+      }
     } else {
-      DBG("FDRS packet failed.");
+      printSensorBytes();
+      Serial.println("A02YYUW: no valid frame received.");
     }
-  } else {
-    printSensorBytes();
-    Serial.println("A02YYUW: no valid frame received.");
   }
-
-  sleepFDRS(SEND_INTERVAL_SECONDS);
+  delay(1);
 }

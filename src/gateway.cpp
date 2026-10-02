@@ -4,6 +4,8 @@
 #else
 #include "terrasmart_gateway_config.h"
 #endif
+#include <fdrs_globals.h>
+#include "terrasmart_ota.h"
 #include <fdrs_gateway.h>
 
 void setup() {
@@ -12,4 +14,6 @@ void setup() {
 
 void loop() {
   loopFDRS();
+  terrasSmartOtaServiceEspNow();
+  terrasSmartOtaServiceUart();
 }

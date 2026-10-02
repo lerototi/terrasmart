@@ -379,6 +379,116 @@ def patch_runtime_gateway(*_args, **_kwargs) -> None:
         if source != original:
             header.write_text(source)
 
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_ota.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = source.replace(
+            '    ArduinoOTA.setHostname("FDRSGW");',
+            '    ArduinoOTA.setHostname("terrasmart-mqtt-gateway");\n'
+            '    ArduinoOTA.setPassword(FDRS_OTA_PASSWORD);',
+            1,
+        )
+        if source != original:
+            header.write_text(source)
+
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_mqtt.h"
+    ):
+        source = header.read_text()
+        # Clear the retry source byte before each begin so a lost ACK cannot
+        # carry into the next packet and cause a duplicate/stale ACK.
+        source = re.sub(
+            r"if \(strcmp\(topic, TERRASMART_OTA_TOPIC\) == 0\) \{\n"
+            r"\s*terrasSmartOtaHandleMqttCommand\(message, length\);\n"
+            r"\s*return;\n\s*\}\n",
+            "",
+            source,
+        )
+        callback = (
+            "void mqtt_callback(char *topic, byte *message, unsigned int length)\n{\n"
+            "    if (strcmp(topic, TERRASMART_OTA_TOPIC) == 0) {\n"
+            "        terrasSmartOtaHandleMqttCommand(message, length);\n"
+            "        return;\n"
+            "    }\n"
+        )
+        source = re.sub(
+            r"void mqtt_callback\(char \*topic, byte \*message, unsigned int length\)\n\{\n",
+            lambda _match: callback,
+            source,
+            count=1,
+        )
+        header.write_text(source)
+
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = re.sub(
+            r"#if defined\(TERRASMART_OTA_ESPNOW_GATEWAY\)\n  serviceOtaUart\(\);\n#endif\n",
+            "",
+            source,
+        )
+        if source != original:
+            header.write_text(source)
+
+def normalize_fdrs_serial_ota(*_args, **_kwargs) -> None:
+    """Replace the upstream line parser with a bounded, OTA-aware parser."""
+    project_dir = Path(env.subst("$PROJECT_DIR"))
+    replacement = r'''void getSerial() {
+  Stream *input = nullptr;
+  if (UART_IF.available()) input = &UART_IF;
+  else if (Serial.available()) input = &Serial;
+  if (input == nullptr) return;
+
+  String incomingString = input->readStringUntil((char)10);
+  if (incomingString.startsWith("!TSOTA:")) {
+    terrasSmartOtaHandleUartLine(incomingString.c_str());
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, incomingString);
+  if (error) {
+    DBG2("json parse err");
+    DBG2(incomingString);
+    return;
+  }
+  const int count = doc.size();
+  if (count <= 0 || count > 256) return;
+  JsonObject obj = doc[0].as<JsonObject>();
+  if (obj.containsKey("type")) {
+    for (int i = 0; i < count; ++i) {
+      theData[i].id = doc[i]["id"];
+      theData[i].t = doc[i]["type"];
+      theData[i].d = doc[i]["data"];
+    }
+    ln = count;
+    newData = event_serial;
+  } else if (obj.containsKey("cmd")) {
+    theCmd.cmd = doc[0]["cmd"];
+    theCmd.param = doc[0]["param"];
+  }
+}
+
+void getSerial_PLACEHOLDER()'''
+    replacement = replacement.replace("\nvoid getSerial_PLACEHOLDER()", "")
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_serial.h"
+    ):
+        source = header.read_text()
+        updated = re.sub(
+            r"void getSerial\(\) \{.*?\n\}\n(?=\s*void sendSerial\(\))",
+            replacement + "\n",
+            source,
+            count=1,
+            flags=re.DOTALL,
+        )
+        if updated != source:
+            header.write_text(updated)
+
 
 def patch_fdrs_initial_status(*_args, **_kwargs) -> None:
     project_dir = Path(env.subst("$PROJECT_DIR"))
@@ -390,6 +500,142 @@ def patch_fdrs_initial_status(*_args, **_kwargs) -> None:
         source = source.replace(
             '  client.publish(TOPIC_STATUS, "FDRS initialized");\n',
             "",
+        )
+        if source != original:
+            header.write_text(source)
+
+
+def patch_fdrs_ota_transport(*_args, **_kwargs) -> None:
+    """Route OTA UART frames and ESP-NOW frames into the application OTA layer."""
+    project_dir = Path(env.subst("$PROJECT_DIR"))
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_node_espnow.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = re.sub(
+            r"(void OnDataRecv\([^\n]+\)\n\{\n)(?!\s*if \(terrasSmartOtaCaptureEspNow)",
+            r"\1    if (terrasSmartOtaCaptureEspNow(incomingData, len, mac)) return;\n",
+            source,
+        )
+        if source != original:
+            header.write_text(source)
+
+    # Normalize the serial parser block after the other FDRS compatibility
+    # patches. The pinned upstream header has no newline after the GPS endif
+    # in some cached copies, which can swallow the following JSON declaration.
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_serial.h"
+    ):
+        source = header.read_text()
+        source = re.sub(
+            r"#ifdef GPS_IF.*?#endif // GPS_IF[^\n]*",
+            "#endif // GPS_IF",
+            source,
+            count=1,
+            flags=re.DOTALL,
+        )
+        source = re.sub(
+            r'\s*if \(incomingString\.startsWith\("!TSOTA:"\)\) \{.*?\n\s*\}\n?',
+            "",
+            source,
+            count=1,
+            flags=re.DOTALL,
+        )
+        source = source.replace(
+            "#endif // GPS_IF\n  DeserializationError error =",
+            "#endif // GPS_IF\n"
+            '  if (incomingString.startsWith("!TSOTA:")) {\n'
+            "    terrasSmartOtaHandleUartLine(incomingString.c_str());\n"
+            "    return;\n"
+            "  }\n"
+            "  JsonDocument doc;\n  DeserializationError error =",
+            1,
+        )
+        header.write_text(source)
+
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_espnow.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = re.sub(
+            r"(void OnDataRecv\([^\n]+\)\n\{\n)(?!\s*if \(terrasSmartOtaCaptureEspNow)",
+            r"\1  if (terrasSmartOtaCaptureEspNow(incomingData, len, mac)) return;\n",
+            source,
+        )
+        if source != original:
+            header.write_text(source)
+
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_serial.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = source.replace("}#endif // GPS_IF", "}\n#endif // GPS_IF")
+        source = re.sub(
+            r"#endif // GPS_IF[^\n]*"
+            r"(?:\s*if \(incomingString\.startsWith\(\"!TSOTA:\"\)\) \{\n"
+            r"\s*terrasSmartOtaHandleUartLine\(incomingString\.c_str\(\)\);\n"
+            r"\s*return;\n\s*\}\n)?"
+            r"\s*JsonDocument doc;",
+            "#endif // GPS_IF\n"
+            '  if (incomingString.startsWith("!TSOTA:")) {\n'
+            "    terrasSmartOtaHandleUartLine(incomingString.c_str());\n"
+            "    return;\n"
+            "  }\n"
+            "  JsonDocument doc;",
+            source,
+            count=1,
+        )
+        if source != original:
+            header.write_text(source)
+
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_mqtt.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = source.replace(
+            "            client.subscribe(TOPIC_COMMAND);",
+            "            client.subscribe(TOPIC_COMMAND);\n"
+            "            client.subscribe(TERRASMART_OTA_TOPIC);",
+            1,
+        )
+        source = re.sub(
+            r"(\s*client\.subscribe\(TERRASMART_OTA_TOPIC\);\n){2,}",
+            "\n            client.subscribe(TERRASMART_OTA_TOPIC);\n",
+            source,
+        )
+        source = re.sub(
+            r'\s*if \(strcmp\(topic, TERRASMART_OTA_TOPIC\) == 0\) \{\n'
+            r'\s*terrasSmartOtaHandleMqttCommand\(message, length\);\n'
+            r'\s*return;\n\s*\}\n',
+            "",
+            source,
+        )
+        source = source.replace(
+            "void mqtt_callback(char *topic, byte *message, unsigned int length)\n{\n",
+            "void mqtt_callback(char *topic, byte *message, unsigned int length)\n{\n"
+            "    if (strcmp(topic, TERRASMART_OTA_TOPIC) == 0) {\n"
+            "        terrasSmartOtaHandleMqttCommand(message, length);\n"
+            "        return;\n"
+            "    }\n",
+            1,
+        )
+        if source != original:
+            header.write_text(source)
+
+    for header in project_dir.glob(
+        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_ota.h"
+    ):
+        source = header.read_text()
+        original = source
+        source = source.replace(
+            '    ArduinoOTA.setHostname("FDRSGW");',
+            '    ArduinoOTA.setHostname("terrasmart-mqtt-gateway");\n'
+            "    ArduinoOTA.setPassword(TERRASMART_OTA_PASSWORD);",
+            1,
         )
         if source != original:
             header.write_text(source)
@@ -473,6 +719,8 @@ patch_fdrs_node_espnow()
 patch_fdrs_topics()
 patch_runtime_gateway()
 patch_fdrs_initial_status()
+patch_fdrs_ota_transport()
+normalize_fdrs_serial_ota()
 env.AddPreAction("$BUILD_DIR/src/node_sensor.cpp.o", patch_fdrs_time)
 env.AddPreAction("$BUILD_DIR/src/float_switch_node.cpp.o", patch_fdrs_time)
 env.AddPreAction("$BUILD_DIR/src/gateway.cpp.o", patch_fdrs_time)
