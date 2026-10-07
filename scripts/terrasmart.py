@@ -623,6 +623,15 @@ def patch_fdrs_ota_transport(*_args, **_kwargs) -> None:
             "    }\n",
             1,
         )
+        source = re.sub(
+            r"(void mqtt_callback\(char \*topic, byte \*message, unsigned int length\)\s*\{)(?!\s*if \(strcmp\(topic, TERRASMART_OTA_TOPIC\) == 0\))",
+            r"\1\n    if (strcmp(topic, TERRASMART_OTA_TOPIC) == 0) {\n"
+            "        terrasSmartOtaHandleMqttCommand(message, length);\n"
+            "        return;\n"
+            "    }\n",
+            source,
+            count=1,
+        )
         if source != original:
             header.write_text(source)
 

@@ -20,6 +20,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 extern PubSubClient client;
+void terrasSmartOtaServiceStatusLed();
 #endif
 
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY)
@@ -85,15 +86,21 @@ inline int fromHex(char value) {
 }
 
 inline bool fromUartLine(const String &line, Packet &packet) {
-  if (!line.startsWith("!TSOTA:") || ((line.length() - 7) & 1U)) {
+  // Serial.println() terminates UART frames with CRLF. readStringUntil('\n')
+  // leaves the carriage return in the String, which otherwise makes the hex
+  // payload appear to have an invalid odd length and silently drops the frame.
+  String normalizedLine = line;
+  normalizedLine.trim();
+  if (!normalizedLine.startsWith("!TSOTA:") ||
+      ((normalizedLine.length() - 7) & 1U)) {
     return false;
   }
   uint8_t bytes[9 + MAX_CHUNK];
-  const size_t length = (line.length() - 7) / 2;
+  const size_t length = (normalizedLine.length() - 7) / 2;
   if (length > sizeof(bytes)) return false;
   for (size_t i = 0; i < length; ++i) {
-    const int high = fromHex(line[7 + i * 2]);
-    const int low = fromHex(line[8 + i * 2]);
+    const int high = fromHex(normalizedLine[7 + i * 2]);
+    const int low = fromHex(normalizedLine[8 + i * 2]);
     if (high < 0 || low < 0) return false;
     bytes[i] = static_cast<uint8_t>((high << 4) | low);
   }
@@ -179,6 +186,14 @@ inline uint8_t processUpdatePacket(const Packet &packet) {
     }
     memcpy(&expectedSize, packet.payload, sizeof(expectedSize));
     if (expectedSize == 0 || !Update.begin(expectedSize)) {
+#if defined(ESP32)
+      Serial.printf("OTA update begin failed: size=%lu error=%u (%s)\n",
+                    static_cast<unsigned long>(expectedSize), Update.getError(),
+                    Update.errorString());
+#else
+      Serial.printf("OTA update begin failed: size=%lu\n",
+                    static_cast<unsigned long>(expectedSize));
+#endif
       updaterStarted = false;
       return STATUS_UPDATE_ERROR;
     }
@@ -266,12 +281,26 @@ inline void serviceEspNow() {
 inline bool handleUartLine(const String &line) {
   Packet packet;
   if (!fromUartLine(line, packet)) return false;
+  if (packet.type != Type::Data || packet.sequence % 256 == 0) {
+    Serial.printf("OTA UART packet: target=%u type=%u sequence=%u size=%u\n",
+                  packet.target, static_cast<uint8_t>(packet.type), packet.sequence,
+                  packet.size);
+  }
   if (packet.target == TERRASMART_OTA_GATEWAY_ID) {
     const bool isEnd = packet.type == Type::End;
     const uint8_t status = processUpdatePacket(packet);
+    if (status != STATUS_OK) {
+      Serial.printf("OTA packet rejected: type=%u sequence=%u status=%u\n",
+                    static_cast<uint8_t>(packet.type), packet.sequence, status);
+    }
+    Serial.printf("OTA UART ACK sent: target=%u sequence=%u status=%u\n",
+                  packet.target, packet.sequence, status);
     Serial1.println(toUartLine(makePacket(Type::Ack, packet.target,
                                           packet.sequence, &status, 1)));
+    Serial1.flush();
     if (isEnd && status == STATUS_OK) {
+      Serial.println("OTA_SUCCESS: ESP-NOW gateway firmware updated; restarting");
+      Serial.flush();
       delay(100);
       ESP.restart();
     }
@@ -303,8 +332,10 @@ inline bool consumeUartAck(const String &line) {
 inline void writeUartLine(const String &line) {
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   Serial1.println(line);
+  Serial1.flush();
 #else
   Serial.println(line);
+  Serial.flush();
 #endif
 }
 
@@ -318,13 +349,28 @@ inline bool waitForAck(uint8_t target, uint16_t sequence) {
 #endif
     if (uart.available()) {
       String line = uart.readStringUntil('\n');
-      if (consumeUartAck(line) && uartAck.target == target &&
-          uartAck.sequence == sequence && uartAck.size == 1) {
-        return uartAck.payload[0] == STATUS_OK;
+      if (line.length()) {
+        Serial.printf("OTA UART RX: length=%u prefix=%.48s\n",
+                      static_cast<unsigned>(line.length()), line.c_str());
+      }
+      if (consumeUartAck(line)) {
+        if (uartAck.target == target && uartAck.sequence == sequence &&
+            uartAck.size == 1) {
+          if (uartAck.payload[0] != STATUS_OK) {
+            Serial.printf("OTA UART NACK: target=%u sequence=%u status=%u\n",
+                          target, sequence, uartAck.payload[0]);
+            return false;
+          }
+          return true;
+        }
+        Serial.printf("OTA UART ACK mismatch: expected target=%u sequence=%u; received target=%u sequence=%u size=%u\n",
+                      target, sequence, uartAck.target, uartAck.sequence,
+                      uartAck.size);
       }
     }
     client.loop();
     delay(1);
+    terrasSmartOtaServiceStatusLed();
   }
   return false;
 }
@@ -335,7 +381,64 @@ inline bool sendAndWait(const Packet &packet) {
     writeUartLine(toUartLine(packet));
     if (waitForAck(packet.target, packet.sequence)) return true;
   }
+  Serial.printf("OTA UART ACK failed: target=%u type=%u sequence=%u after %u attempts\n",
+                packet.target, static_cast<uint8_t>(packet.type), packet.sequence,
+                MAX_RETRIES);
   return false;
+}
+
+inline bool isLocalHttpUrl(const String &url) {
+  if (!url.startsWith("http://")) return false;
+  const int authorityStart = 7;
+  int authorityEnd = url.indexOf('/', authorityStart);
+  if (authorityEnd < 0) authorityEnd = url.length();
+  String authority = url.substring(authorityStart, authorityEnd);
+  if (authority.length() == 0 || authority.indexOf('@') >= 0) return false;
+
+  const int portSeparator = authority.indexOf(':');
+  String host = portSeparator >= 0 ? authority.substring(0, portSeparator) : authority;
+  host.toLowerCase();
+  if (host.endsWith(".local")) return true;
+
+  uint8_t octets[4] = {};
+  uint8_t octetIndex = 0;
+  int segmentStart = 0;
+  for (int i = 0; i <= host.length(); ++i) {
+    if (i != host.length() && host[i] != '.') continue;
+    if (octetIndex >= 4 || i == segmentStart || i - segmentStart > 3) return false;
+    uint16_t value = 0;
+    for (int digit = segmentStart; digit < i; ++digit) {
+      if (host[digit] < '0' || host[digit] > '9') return false;
+      value = value * 10 + static_cast<uint8_t>(host[digit] - '0');
+    }
+    if (value > 255) return false;
+    octets[octetIndex++] = static_cast<uint8_t>(value);
+    segmentStart = i + 1;
+  }
+  if (octetIndex != 4) return false;
+  const bool private10 = octets[0] == 10;
+  const bool private172 = octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31;
+  const bool private192 = octets[0] == 192 && octets[1] == 168;
+  return private10 || private172 || private192;
+}
+
+inline bool beginFirmwareDownload(HTTPClient &http, const String &url,
+                                  WiFiClient &plainClient,
+                                  WiFiClientSecure &secureClient) {
+  if (url.startsWith("https://")) {
+#if defined(TERRASMART_OTA_ROOT_CA)
+    secureClient.setCACert(TERRASMART_OTA_ROOT_CA);
+    return http.begin(secureClient, url);
+#else
+    Serial.println("OTA refused: HTTPS requires TERRASMART_OTA_ROOT_CA");
+    return false;
+#endif
+  }
+  if (!isLocalHttpUrl(url)) {
+    Serial.println("OTA refused: HTTP is allowed only for private IPs or .local hosts");
+    return false;
+  }
+  return http.begin(plainClient, url);
 }
 
 inline bool parseUpdateCommand(JsonDocument &doc, uint8_t &target,
@@ -351,24 +454,37 @@ inline bool parseUpdateCommand(JsonDocument &doc, uint8_t &target,
   url = doc["url"].as<String>();
   expectedSize = doc["size"].as<uint32_t>();
   expectedCrc = doc["crc32"].as<uint32_t>();
-  return url.startsWith("https://") && expectedSize > 0 &&
+  return (url.startsWith("https://") || isLocalHttpUrl(url)) && expectedSize > 0 &&
          url.length() <= 240;
 }
 
 inline bool performUpdate(uint8_t target, const String &url,
                           uint32_t expectedSize, uint32_t expectedCrc) {
+  const uint32_t maxForwardSize =
+      target == TERRASMART_OTA_GATEWAY_ID
+          ? TERRASMART_OTA_GATEWAY_FORWARD_LIMIT
+          : TERRASMART_OTA_FORWARD_LIMIT;
+  if (expectedSize == 0 || expectedSize > maxForwardSize) {
+    Serial.printf("OTA target %u rejected: image size %lu exceeds limit %lu\n",
+                  target, static_cast<unsigned long>(expectedSize),
+                  static_cast<unsigned long>(maxForwardSize));
+    return false;
+  }
+
+  Serial.printf("OTA relay started: target=%u size=%lu\n", target,
+                static_cast<unsigned long>(expectedSize));
+  WiFiClient plainClient;
   WiFiClientSecure secureClient;
-#if defined(TERRASMART_OTA_ROOT_CA)
-  secureClient.setCACert(TERRASMART_OTA_ROOT_CA);
-#else
-  Serial.println("OTA refused: configure TERRASMART_OTA_ROOT_CA");
-  return false;
-#endif
   HTTPClient http;
-  if (!http.begin(secureClient, url)) return false;
+  if (!beginFirmwareDownload(http, url, plainClient, secureClient)) {
+    Serial.println("OTA download setup failed");
+    return false;
+  }
   const int response = http.GET();
-  if (response != HTTP_CODE_OK || expectedSize > 700000UL ||
+  if (response != HTTP_CODE_OK ||
       http.getSize() != static_cast<int>(expectedSize)) {
+    Serial.printf("OTA download failed: HTTP=%d expected_size=%lu received_size=%d\n",
+                  response, static_cast<unsigned long>(expectedSize), http.getSize());
     http.end();
     return false;
   }
@@ -398,8 +514,12 @@ inline bool performUpdate(uint8_t target, const String &url,
         delay(1);
       }
       client.loop();
+      terrasSmartOtaServiceStatusLed();
     }
     if (received != wanted) {
+      Serial.printf("OTA download timed out at byte %lu of %lu\n",
+                    static_cast<unsigned long>(expectedSize - remaining + received),
+                    static_cast<unsigned long>(expectedSize));
       success = false;
       break;
     }
@@ -409,6 +529,11 @@ inline bool performUpdate(uint8_t target, const String &url,
     remaining -= received;
   }
   if (!success || remaining || (computedCrc ^ 0xFFFFFFFFUL) != expectedCrc) {
+    if (success && remaining == 0) {
+      Serial.printf("OTA CRC mismatch: expected=%lu calculated=%lu\n",
+                    static_cast<unsigned long>(expectedCrc),
+                    static_cast<unsigned long>(computedCrc ^ 0xFFFFFFFFUL));
+    }
     sendAndWait(makePacket(Type::Abort, target, sequence, nullptr, 0));
     http.end();
     return false;
@@ -416,6 +541,7 @@ inline bool performUpdate(uint8_t target, const String &url,
   packet = makePacket(Type::End, target, sequence, reinterpret_cast<const uint8_t *>(&expectedCrc), sizeof(expectedCrc));
   const bool completed = sendAndWait(packet);
   http.end();
+  if (!completed) Serial.printf("OTA target %u did not confirm completion\n", target);
   return completed;
 }
 
@@ -423,15 +549,25 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
                                  uint32_t expectedCrc);
 
 inline bool handleMqttCommand(JsonDocument &doc) {
-  if (updateInProgress) return false;
+  if (updateInProgress) {
+    Serial.println("OTA command ignored: update already in progress");
+    return false;
+  }
   uint8_t target;
   String url;
   uint32_t size;
   uint32_t crc;
-  if (!parseUpdateCommand(doc, target, url, size, crc)) return false;
+  if (!parseUpdateCommand(doc, target, url, size, crc)) {
+    Serial.println("OTA command rejected: invalid fields, URL, size, or CRC");
+    return false;
+  }
+  Serial.printf("OTA MQTT command accepted: target=%u size=%lu url=%s\n", target,
+                static_cast<unsigned long>(size), url.c_str());
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   if (target == TERRASMART_OTA_MQTT_DEVICE_ID) {
-    return performGatewayUpdate(url, size, crc);
+    const bool result = performGatewayUpdate(url, size, crc);
+    if (!result) Serial.println("OTA target 0: failed");
+    return result;
   }
 #endif
   updateInProgress = true;
@@ -444,15 +580,10 @@ inline bool handleMqttCommand(JsonDocument &doc) {
 inline bool performGatewayUpdate(const String &url, uint32_t size,
                                  uint32_t expectedCrc) {
   if (size == 0 || size > 1200000UL) return false;
+  WiFiClient plainClient;
   WiFiClientSecure secureClient;
-#if defined(TERRASMART_OTA_ROOT_CA)
-  secureClient.setCACert(TERRASMART_OTA_ROOT_CA);
-#else
-  Serial.println("OTA refused: configure TERRASMART_OTA_ROOT_CA");
-  return false;
-#endif
   HTTPClient http;
-  if (!http.begin(secureClient, url)) return false;
+  if (!beginFirmwareDownload(http, url, plainClient, secureClient)) return false;
   const int response = http.GET();
   if (response != HTTP_CODE_OK || http.getSize() != static_cast<int>(size) ||
       !Update.begin(size)) {
@@ -472,6 +603,7 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
       if (stream->available()) received += stream->readBytes(buffer + received, wanted - received);
       else delay(1);
       client.loop();
+      terrasSmartOtaServiceStatusLed();
     }
     if (received != wanted || Update.write(buffer, received) != received) {
       success = false;
@@ -486,6 +618,7 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
     Update.abort();
     return false;
   }
+  Serial.println("OTA target 0: complete; restarting");
   delay(250);
   ESP.restart();
   return true;
@@ -511,6 +644,16 @@ inline bool terrasSmartOtaCaptureEspNow(const uint8_t *data, size_t length,
 inline void terrasSmartOtaServiceEspNow() {
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY)
   TerraSmartOta::serviceEspNow();
+#endif
+}
+
+inline bool terrasSmartOtaUpdateInProgress() {
+#if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY)
+  return TerraSmartOta::updaterStarted;
+#elif defined(TERRASMART_OTA_MQTT)
+  return TerraSmartOta::updateInProgress;
+#else
+  return false;
 #endif
 }
 

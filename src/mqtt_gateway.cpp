@@ -29,8 +29,10 @@ inline void terrasSmartOtaLoop();
 namespace {
 constexpr uint8_t STATUS_LED = LED_BUILTIN;
 constexpr unsigned long MQTT_STATUS_INTERVAL = 30000;
-unsigned long lastStatusChange = 0;
+constexpr unsigned long OTA_STATUS_LED_BLINK_INTERVAL_MS = 400;
+unsigned long lastStatusLedToggle = 0;
 bool statusLedState = false;
+bool otaLedActive = false;
 unsigned long lastMqttStatus = 0;
 bool mqttStatusOnline = false;
 
@@ -403,49 +405,50 @@ void maintainMqttStatus() {
 }
 
 void setStatusLed(bool on) {
-  // The built-in LED on common ESP boards is active-low.
-  digitalWrite(STATUS_LED, on ? LOW : HIGH);
+  // This MQTT gateway board's built-in LED is active-high.
+  digitalWrite(STATUS_LED, on ? HIGH : LOW);
 }
 
 void updateStatusLed() {
-  if (WiFi.status() == WL_CONNECTED && client.connected()) {
-    setStatusLed(true);
+  const unsigned long now = millis();
+  const bool updating = terrasSmartOtaUpdateInProgress();
+  if (!updating) {
+    otaLedActive = false;
+    statusLedState = false;
+    setStatusLed(false);
     return;
   }
-
-#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
-  const bool setupApActive = WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA;
-  const bool staConnected = WiFi.status() == WL_CONNECTED;
-  const unsigned long interval = staConnected ? 1000 : (setupApActive ? 500 : 250);
-#else
-  const unsigned long interval = WiFi.status() == WL_CONNECTED ? 1000 : 250;
-#endif
-  if (millis() - lastStatusChange >= interval) {
-    lastStatusChange = millis();
+  if (!otaLedActive) {
+    otaLedActive = true;
+    lastStatusLedToggle = now;
+    statusLedState = false;
+    setStatusLed(false);
+  }
+  if (now - lastStatusLedToggle >= OTA_STATUS_LED_BLINK_INTERVAL_MS) {
+    lastStatusLedToggle = now;
     statusLedState = !statusLedState;
     setStatusLed(statusLedState);
   }
 }
-
-void startupPattern() {
-  for (uint8_t i = 0; i < 3; ++i) {
-    setStatusLed(true);
-    delay(150);
-    setStatusLed(false);
-    delay(150);
-  }
 }
+
+void terrasSmartOtaServiceStatusLed() {
+  updateStatusLed();
 }
 
 void setup() {
   pinMode(STATUS_LED, OUTPUT);
   setStatusLed(false);
-  startupPattern();
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   buildApIdentity();
   loadConfiguration();
   handlePhysicalReset();
   applyConfiguration();
+#endif
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+  // Keep complete hex-encoded OTA UART frames in the RX ring if loopFDRS()
+  // is briefly busy while the peer transmits.
+  Serial1.setRxBufferSize(1024);
 #endif
   beginFDRS();
 #if defined(TERRASMART_OTA_MQTT)

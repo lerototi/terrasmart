@@ -9,11 +9,13 @@
 #define FDRS_OTA_PASSWORD TERRASMART_OTA_PASSWORD
 #endif
 
-// Local credentials belong in the ignored secrets header.
-// The fallback values keep a clean clone compilable until that file is created.
-#if __has_include("terrasmart_mqtt_gateway_secrets.h")
+// Shared deployment secrets are imported by the OTA config above. Continue
+// accepting the former MQTT-only header as a migration fallback.
+#if !__has_include("terrasmart_secrets.h") && \
+    __has_include("terrasmart_mqtt_gateway_secrets.h")
 #include "terrasmart_mqtt_gateway_secrets.h"
-#else
+#elif !__has_include("terrasmart_secrets.h")
+// Fallbacks keep a clean clone compilable before local secrets are configured.
 #define WIFI_SSID ""
 #define WIFI_PASS ""
 #define MQTT_ADDR "192.168.1.10"
