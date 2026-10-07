@@ -99,10 +99,13 @@ mosquitto_sub -h 10.0.0.216 -p 1883 -u mqtt-user -P 'your-mqtt-password' -t terr
 
 The previous one-time `FDRS initialized` message was removed because it could be lost when no subscriber was connected during boot.
 
-Deployment credentials belong in the ignored
-`include/terrasmart_mqtt_gateway_secrets.h` file. Start with
-`include/terrasmart_mqtt_gateway_secrets.h.example` and replace the placeholders
-before building a deployment firmware. The ESP8266 Wemos D1 mini cannot
+Deployment credentials belong in the ignored `include/terrasmart_secrets.h`
+file. Start with `include/terrasmart_secrets.h.example` and replace the
+placeholders before building a deployment firmware. This single file contains
+Wi-Fi, MQTT, setup-AP, ArduinoOTA, and HTTPS CA settings. Existing installations
+can migrate their values from the former MQTT and OTA secrets headers; those
+legacy files remain supported as a fallback until the shared file is created.
+The ESP8266 Wemos D1 mini cannot
 connect to a 5 GHz-only network; the ESP32 gateway also requires a compatible
 2.4 GHz network for this configuration.
 
@@ -176,7 +179,7 @@ The built-in LED behavior for the ESP32 MQTT gateway is:
 - medium blink: setup AP active;
 - fast blink: no Wi-Fi and no setup AP.
 
-The AP password is configured as `FDRS_AP_PASSWORD` in the ignored secrets
+The AP password is configured as `FDRS_AP_PASSWORD` in the ignored shared secrets
 file. Do not commit that file.
 
 For the D1 mini MQTT gateway, disconnect the TX/RX wires to the ESP32 first.
