@@ -7,7 +7,7 @@
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY) || defined(TERRASMART_OTA_MQTT)
 #if defined(ESP8266)
 #include <Updater.h>
-#define TERRASMART_OTA_ABORT() Update.end(true)
+#define TERRASMART_OTA_ABORT() ESP.restart()
 #else
 #include <Update.h>
 #define TERRASMART_OTA_ABORT() Update.abort()
