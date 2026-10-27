@@ -4,6 +4,8 @@
 
 // Use a unique reading ID for this controller node.
 #define READING_ID 4
+#define TERRASMART_OTA_DEVICE_ID 0x14
+#define TERRASMART_OTA_NODE
 #define GTWY_MAC 0x01
 #define FDRS_ESPNOW_CHANNEL 1
 

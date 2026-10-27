@@ -1,0 +1,9 @@
+{
+  "home_assistant_www_dir": "/mnt/homeassistant/config/www",
+  "home_assistant_base_url": "http://homeassistant.local",
+  "mqtt_broker": "192.168.1.10",
+  "mqtt_port": 1883,
+  "mqtt_username": "mqtt-user",
+  "mqtt_password": "",
+  "mqtt_topic": "terrasmart/ota"
+}

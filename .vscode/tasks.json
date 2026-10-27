@@ -1,0 +1,81 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TerraSmart OTA: gateway build, copy and prepare payload",
+      "type": "process",
+      "command": "python3",
+      "args": [
+        "${workspaceFolder}/scripts/ota_release.py",
+        "--env",
+        "esp32dev_gateway",
+        "--www-dir",
+        "${input:homeAssistantWwwDir}",
+        "--base-url",
+        "${input:homeAssistantBaseUrl}",
+        "--payload-file",
+        "${workspaceFolder}/.pio/ota/esp32dev_gateway.json"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TerraSmart OTA: build, stage and prepare payload",
+      "type": "process",
+      "command": "python3",
+      "args": [
+        "${workspaceFolder}/scripts/ota_release.py",
+        "--env",
+        "${input:otaEnvironment}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TerraSmart OTA: build, stage and publish MQTT command",
+      "type": "process",
+      "command": "python3",
+      "args": [
+        "${workspaceFolder}/scripts/ota_release.py",
+        "--env",
+        "${input:otaEnvironment}",
+        "--publish"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "homeAssistantWwwDir",
+      "type": "promptString",
+      "description": "Caminho local montado para /config/www do Home Assistant",
+      "default": "/run/user/1000/gvfs/smb-share:server=10.0.0.216,share=config/www"
+    },
+    {
+      "id": "homeAssistantBaseUrl",
+      "type": "promptString",
+      "description": "URL do Home Assistant acessível pelo ESP32",
+      "default": "http://10.0.0.216"
+    },
+    {
+      "id": "otaEnvironment",
+      "type": "pickString",
+      "description": "Selecione o firmware/alvo OTA",
+      "options": [
+        "d1_mini_node",
+        "d1_mini_float_switch_node",
+        "d1_mini_relay_node",
+        "esp32dev_gateway",
+        "esp32dev_mqtt_gateway"
+      ],
+      "default": "d1_mini_node"
+    }
+  ]
+}

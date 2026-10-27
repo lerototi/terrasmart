@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "terrasmart_float_switch_config.h"
+#include "terrasmart_ota.h"
 #include <fdrs_node.h>
 
 namespace {
@@ -30,6 +31,20 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t nextSample = 0;
+  if (!terrasSmartOtaUpdateInProgress()) {
+    loopFDRS();
+  }
+  terrasSmartOtaServiceEspNow();
+  if (terrasSmartOtaUpdateInProgress()) {
+    delay(1);
+    return;
+  }
+  if (static_cast<int32_t>(millis() - nextSample) < 0) {
+    delay(1);
+    return;
+  }
+  nextSample = millis() + SEND_INTERVAL_SECONDS * 1000UL;
   const bool minimumActive = isSwitchActive(BOIA_MIN_PIN);
   const bool maximumActive = isSwitchActive(BOIA_MAX_PIN);
 
@@ -49,5 +64,4 @@ void loop() {
     DBG("Float switch packet failed.");
   }
 
-  sleepFDRS(SEND_INTERVAL_SECONDS);
 }
