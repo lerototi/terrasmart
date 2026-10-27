@@ -32,8 +32,14 @@ void setup() {
 
 void loop() {
   static uint32_t nextSample = 0;
-  loopFDRS();
+  if (!terrasSmartOtaUpdateInProgress()) {
+    loopFDRS();
+  }
   terrasSmartOtaServiceEspNow();
+  if (terrasSmartOtaUpdateInProgress()) {
+    delay(1);
+    return;
+  }
   if (static_cast<int32_t>(millis() - nextSample) < 0) {
     delay(1);
     return;

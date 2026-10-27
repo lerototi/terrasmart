@@ -1,6 +1,6 @@
 # OTA TerraSmart
 
-## Topologia suportada nesta primeira versão
+## Topologia
 
 ```text
 servidor HTTPS -> gateway MQTT ESP32 -> UART -> gateway ESP-NOW ESP32
@@ -12,9 +12,15 @@ gateway MQTT ESP8266 continua usando ArduinoOTA na rede local; encaminhamento de
 imagens dele para a UART ainda não é suportado, pois nessa placa a UART ligada
 ao gateway ESP-NOW é a mesma interface usada para upload USB.
 
-Validação de bancada: a atualização OTA do gateway MQTT ESP32 via Home Assistant
-e MQTT foi concluída com sucesso. Os alvos ESP-NOW e os nós ainda precisam ser
-validados individualmente.
+O gateway MQTT ESP32 baixa a imagem e a envia ao gateway ESP-NOW pela UART. Para
+targets de nós, o gateway ESP-NOW transmite o início por broadcast para descobrir
+o MAC do nó cujo ID corresponde ao target; os blocos seguintes seguem por unicast
+até esse nó, que devolve os ACKs. A mesma sessão OTA
+mantém o leitor serial genérico do FDRS pausado até o ACK do `End` ou `Abort`,
+enquanto os serviços UART OTA e ESP-NOW continuam ativos.
+
+O fluxo está integrado e compila para os gateways e nós configurados; a
+transferência completa por rádio ainda precisa ser confirmada em bancada.
 
 ## Preparação
 
@@ -41,9 +47,10 @@ Os valores inicializados são gateway ESP-NOW `0x01`, nó sensor `0x11`, nó de
 boias `0x12` e nó de relés `0x14`. Se dois dispositivos iguais forem
 implantados, atribua IDs exclusivos em suas configurações de build/firmware.
 
-O gateway envia blocos broadcast ESP-NOW porque a tabela FDRS existente não
-associa IDs lógicos OTA a MACs reais dos nodes. Só aceita e grava os blocos o nó
-com o ID de destino; sua confirmação retorna unicast ao gateway.
+O ID OTA é lógico e não está associado previamente a um MAC. Por isso, `Begin` é
+enviado por broadcast; somente o nó correspondente ao target responde. O gateway
+aprende o MAC pelo ACK e transmite os próximos blocos em unicast. Os ACKs retornam
+pela UART ao gateway MQTT. Nós com outro `TERRASMART_OTA_DEVICE_ID` ignoram `Begin`.
 
 O firmware do gateway ESP-NOW (ID `1`) pode ter até `0x1E0000` bytes, o tamanho
 do slot OTA definido em `partitions_ota.csv`. Os demais alvos encaminhados
@@ -151,17 +158,12 @@ reservado pelo layout de flash do board.
 
 - **UART exclusiva durante OTA:** no ESP32 ESP-NOW, `loopFDRS()` também lê a
   `Serial1` compartilhada com o gateway MQTT e tenta interpretar as linhas como
-  JSON. Durante a gravação isso compete com o parser dos quadros OTA e pode
-  consumir ou descartar pacotes; o sintoma observado foi a transferência parar
-  numa sequência de dados sem ACK. `src/gateway.cpp` suspende `loopFDRS()` quando
-  `terrasSmartOtaUpdateInProgress()` está ativo, deixando o parser UART OTA como
-  único leitor até a gravação local terminar ou ser abortada. Ao desenvolver
-  encaminhamento OTA para nós via ESP-NOW, aplique a mesma exclusividade durante
-  toda a sessão `Begin`–`End`/`Abort`, inclusive enquanto espera a confirmação
-  final. Mantenha em execução o serviço UART OTA e o serviço ESP-NOW necessários
-  para encaminhar quadros e ACKs; pause somente o leitor genérico FDRS da UART.
-  Não deixe `loopFDRS()` e o parser OTA consumirem a mesma UART durante uma
-  transferência.
+  JSON. `src/gateway.cpp` suspende `loopFDRS()` tanto para gravação local quanto
+  durante uma sessão encaminhada a um nó, até o ACK terminal chegar pela UART.
+  O serviço OTA UART e o serviço ESP-NOW permanecem ativos para encaminhar blocos
+  e ACKs; somente o leitor genérico FDRS da UART é pausado.
+- Se o nó deixar de responder, o gateway ESP-NOW encerra a sessão encaminhada
+  após 60 segundos sem atividade e volta a processar o tráfego serial FDRS.
 - O LED onboard do gateway ESP-NOW nesta placa é ativo em HIGH: `LOW` mantém o
   LED apagado e `HIGH` o acende. O firmware o mantém apagado fora de uma sessão
   OTA e pisca rapidamente durante a gravação.

@@ -60,11 +60,12 @@ void setup() {
 
 void loop() {
   // loopFDRS() also reads Serial1 for regular JSON traffic. During a local
-  // firmware write the OTA service must be the sole reader of that UART.
+  // firmware write or a forwarded node update, the OTA service must be the
+  // sole reader of that UART. ESP-NOW servicing stays active to relay node ACKs.
   if (!terrasSmartOtaUpdateInProgress()) {
     loopFDRS();
-    terrasSmartOtaServiceEspNow();
   }
+  terrasSmartOtaServiceEspNow();
   terrasSmartOtaServiceUart();
   updateStatusLed();
 }

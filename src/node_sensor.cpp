@@ -125,8 +125,14 @@ void setup() {
 
 void loop() {
   static uint32_t nextSensorRead = 0;
-  loopFDRS();
+  if (!terrasSmartOtaUpdateInProgress()) {
+    loopFDRS();
+  }
   terrasSmartOtaServiceEspNow();
+  if (terrasSmartOtaUpdateInProgress()) {
+    delay(1);
+    return;
+  }
   if (static_cast<int32_t>(millis() - nextSensorRead) >= 0) {
     nextSensorRead = millis() + SEND_INTERVAL_SECONDS * 1000UL;
     uint16_t distanceMm;

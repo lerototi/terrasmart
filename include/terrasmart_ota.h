@@ -122,6 +122,17 @@ static uint32_t receivedSize = 0;
 static uint32_t runningCrc = 0xFFFFFFFFUL;
 static uint16_t nextSequence = 0;
 static bool restartAfterAck = false;
+#if defined(TERRASMART_OTA_ESPNOW_GATEWAY)
+static bool forwardedUpdateInProgress = false;
+static uint8_t forwardedUpdateTarget = 0;
+static uint16_t forwardedTerminalSequence = 0;
+static bool forwardedTerminalSequenceValid = false;
+static uint32_t forwardedUpdateLastActivity = 0;
+static uint16_t forwardedBeginSequence = 0;
+static uint8_t forwardedNodeMac[6] = {};
+static bool forwardedNodeMacValid = false;
+constexpr uint32_t FORWARDED_UPDATE_TIMEOUT_MS = 60000;
+#endif
 
 inline bool captureEspNow(const uint8_t *data, size_t length,
                           const uint8_t *source) {
@@ -134,26 +145,28 @@ inline bool captureEspNow(const uint8_t *data, size_t length,
   return true;
 }
 
-inline void sendEspNow(const uint8_t *address, const Packet &packet) {
+inline bool sendEspNow(const uint8_t *address, const Packet &packet) {
   uint8_t bytes[9 + MAX_CHUNK];
   const size_t length = serialize(packet, bytes, sizeof(bytes));
-  if (!length) return;
+  if (!length) return false;
 #if defined(ESP8266)
   uint8_t *mutableAddress = const_cast<uint8_t *>(address);
   if (!esp_now_is_peer_exist(mutableAddress)) {
     if (esp_now_add_peer(mutableAddress, ESP_NOW_ROLE_COMBO,
-                         FDRS_ESPNOW_CHANNEL, nullptr, 0) != 0) return;
+                         FDRS_ESPNOW_CHANNEL, nullptr, 0) != 0) return false;
   }
-  esp_now_send(mutableAddress, bytes, length);
+  return esp_now_send(mutableAddress, bytes, length) == 0;
 #elif defined(ESP32)
   if (!esp_now_is_peer_exist(address)) {
     esp_now_peer_info_t peer{};
     peer.ifidx = WIFI_IF_STA;
     peer.channel = FDRS_ESPNOW_CHANNEL;
     memcpy(peer.peer_addr, address, 6);
-    if (esp_now_add_peer(&peer) != ESP_OK) return;
+    if (esp_now_add_peer(&peer) != ESP_OK) return false;
   }
-  esp_now_send(address, bytes, length);
+  return esp_now_send(address, bytes, length) == ESP_OK;
+#else
+  return false;
 #endif
 }
 
@@ -261,6 +274,32 @@ inline void serviceEspNow() {
 #if defined(TERRASMART_OTA_ESPNOW_GATEWAY)
   if (packet.type == Type::Ack) {
     Serial1.println(toUartLine(packet));
+    if (forwardedUpdateInProgress && packet.target == forwardedUpdateTarget) {
+      forwardedUpdateLastActivity = millis();
+      if (packet.sequence == forwardedBeginSequence || packet.sequence <= 12 ||
+          (forwardedTerminalSequenceValid &&
+           packet.sequence == forwardedTerminalSequence)) {
+        Serial.printf("OTA ESP-NOW ACK: target=%u sequence=%u status=%u from=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                      packet.target, packet.sequence,
+                      packet.size == 1 ? packet.payload[0] : 0xFF, source[0],
+                      source[1], source[2], source[3], source[4], source[5]);
+      }
+      if (packet.sequence == forwardedBeginSequence && packet.size == 1 &&
+          packet.payload[0] == STATUS_OK) {
+        memcpy(forwardedNodeMac, source, sizeof(forwardedNodeMac));
+        forwardedNodeMacValid = true;
+        Serial.printf("OTA target %u discovered at %02X:%02X:%02X:%02X:%02X:%02X; switching to unicast\n",
+                      forwardedUpdateTarget, source[0], source[1], source[2],
+                      source[3], source[4], source[5]);
+      }
+    }
+    if (forwardedUpdateInProgress && forwardedTerminalSequenceValid &&
+        packet.target == forwardedUpdateTarget &&
+        packet.sequence == forwardedTerminalSequence) {
+      forwardedUpdateInProgress = false;
+      forwardedTerminalSequenceValid = false;
+      forwardedNodeMacValid = false;
+    }
     return;
   }
   if (packet.target != TERRASMART_OTA_GATEWAY_ID) return;
@@ -269,6 +308,13 @@ inline void serviceEspNow() {
 #endif
 
   const uint8_t status = processUpdatePacket(packet);
+  if (packet.type != Type::Data || status != STATUS_OK ||
+      packet.sequence <= 12 || packet.sequence % 128 == 0) {
+    Serial.printf("OTA ESP-NOW RX: target=%u type=%u sequence=%u size=%u status=%u received=%lu/%lu\n",
+                  packet.target, static_cast<uint8_t>(packet.type), packet.sequence,
+                  packet.size, status, static_cast<unsigned long>(receivedSize),
+                  static_cast<unsigned long>(expectedSize));
+  }
   sendAck(source, packet.target, packet.sequence, status);
   if (restartAfterAck && packet.type == Type::End && status == STATUS_OK) {
     delay(100);
@@ -281,7 +327,8 @@ inline void serviceEspNow() {
 inline bool handleUartLine(const String &line) {
   Packet packet;
   if (!fromUartLine(line, packet)) return false;
-  if (packet.type != Type::Data || packet.sequence % 256 == 0) {
+  if (packet.type != Type::Data || packet.sequence % 256 == 0 ||
+      packet.sequence <= 12) {
     Serial.printf("OTA UART packet: target=%u type=%u sequence=%u size=%u\n",
                   packet.target, static_cast<uint8_t>(packet.type), packet.sequence,
                   packet.size);
@@ -307,11 +354,44 @@ inline bool handleUartLine(const String &line) {
     return true;
   }
 
-  // Device IDs are configured in firmware, while ESP-NOW MACs are assigned by
-  // the radio. Broadcast the numbered OTA blocks; only the matching node ID
-  // accepts them and its ACK returns unicast to this gateway.
-  const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  sendEspNow(broadcast, packet);
+  // Discover the selected logical target with a broadcast Begin, then use the
+  // MAC address from its ACK for unicast data packets. This avoids losing OTA
+  // blocks to best-effort broadcast delivery.
+  if (packet.type == Type::Begin) {
+    if (!forwardedUpdateInProgress || forwardedUpdateTarget != packet.target ||
+        forwardedBeginSequence != packet.sequence) {
+      forwardedUpdateInProgress = true;
+      forwardedUpdateTarget = packet.target;
+      forwardedBeginSequence = packet.sequence;
+      forwardedTerminalSequenceValid = false;
+      forwardedNodeMacValid = false;
+    }
+    forwardedUpdateLastActivity = millis();
+  } else if (forwardedUpdateInProgress &&
+             packet.target == forwardedUpdateTarget &&
+             (packet.type == Type::End || packet.type == Type::Abort)) {
+    forwardedTerminalSequence = packet.sequence;
+    forwardedTerminalSequenceValid = true;
+    forwardedUpdateLastActivity = millis();
+  } else if (forwardedUpdateInProgress &&
+             packet.target == forwardedUpdateTarget) {
+    forwardedUpdateLastActivity = millis();
+  }
+  bool queued;
+  if (forwardedUpdateInProgress && packet.target == forwardedUpdateTarget &&
+      packet.type != Type::Begin && forwardedNodeMacValid) {
+    queued = sendEspNow(forwardedNodeMac, packet);
+  } else {
+    const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    queued = sendEspNow(broadcast, packet);
+  }
+  if (packet.type != Type::Data || packet.sequence <= 12 ||
+      packet.sequence % 128 == 0 || !queued) {
+    Serial.printf("OTA ESP-NOW TX: target=%u type=%u sequence=%u mode=%s queued=%s\n",
+                  packet.target, static_cast<uint8_t>(packet.type), packet.sequence,
+                  packet.type != Type::Begin && forwardedNodeMacValid ? "unicast" : "broadcast",
+                  queued ? "yes" : "no");
+  }
   return true;
 }
 #endif
@@ -649,7 +729,20 @@ inline void terrasSmartOtaServiceEspNow() {
 
 inline bool terrasSmartOtaUpdateInProgress() {
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY)
+#if defined(TERRASMART_OTA_ESPNOW_GATEWAY)
+  if (TerraSmartOta::forwardedUpdateInProgress &&
+      millis() - TerraSmartOta::forwardedUpdateLastActivity >=
+          TerraSmartOta::FORWARDED_UPDATE_TIMEOUT_MS) {
+    TerraSmartOta::forwardedUpdateInProgress = false;
+    TerraSmartOta::forwardedTerminalSequenceValid = false;
+    TerraSmartOta::forwardedNodeMacValid = false;
+    Serial.println("OTA forwarded session timed out; resuming FDRS UART");
+  }
+  return TerraSmartOta::updaterStarted ||
+         TerraSmartOta::forwardedUpdateInProgress;
+#else
   return TerraSmartOta::updaterStarted;
+#endif
 #elif defined(TERRASMART_OTA_MQTT)
   return TerraSmartOta::updateInProgress;
 #else
