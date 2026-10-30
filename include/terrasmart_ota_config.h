@@ -3,6 +3,8 @@
 // OTA command subscription. Restrict publish access to this topic in the MQTT
 // broker ACL; commands are accepted only while the gateway is connected.
 #define TERRASMART_OTA_TOPIC "terrasmart/ota"
+#define TERRASMART_OTA_RELEASE_GATEWAY_ID ""
+#define TERRASMART_GATEWAY_COMMAND_TOPIC "terrasmart/gateways/+/command"
 
 // Maximum forwarded image sizes. The ESP-NOW gateway uses a dedicated OTA
 // partition slot; other forwarded targets retain the conservative limit.
@@ -17,6 +19,14 @@
 
 #ifndef TERRASMART_OTA_MQTT_DEVICE_ID
 #define TERRASMART_OTA_MQTT_DEVICE_ID 0x00
+#endif
+
+#ifndef TERRASMART_OTA_MQTT_TARGET_ID
+#define TERRASMART_OTA_MQTT_TARGET_ID 0x00
+#endif
+
+#ifndef TERRASMART_OTA_ESPNOW_TARGET_ID
+#define TERRASMART_OTA_ESPNOW_TARGET_ID 0x01
 #endif
 
 // Shared deployment secrets are preferred. Legacy OTA secrets remain a

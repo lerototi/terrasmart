@@ -1,12 +1,33 @@
 #include <Arduino.h>
 #include "terrasmart_mqtt_gateway_config.h"
+#include "terrasmart_mqtt_identity.h"
+
+const char *terrasSmartMqttClientId();
+const char *terrasSmartMqttStatusTopic();
+const char *terrasSmartMqttCommandTopic();
+const char *terrasSmartMqttGatewayId();
+const char *terrasSmartMqttOfflinePayload();
+bool terrasSmartMqttCommandTopicMatches(const char *topic);
+void terrasSmartMqttHandleGatewayCommand(const uint8_t *message,
+                                         unsigned int length);
 
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
 #include <Preferences.h>
+#endif
+#if defined(FDRS_RUNTIME_CONFIG)
 #include <DNSServer.h>
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
 #include <ESPmDNS.h>
 #include <WebServer.h>
+#else
+#include <ESP8266WebServer.h>
+#include <EEPROM.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266mDNS.h>
+#endif
+#endif
 
+#if defined(FDRS_RUNTIME_CONFIG)
 const char *fdrs_runtime_ap_ssid = nullptr;
 const char *fdrs_runtime_ap_password = "terrasmart";
 #endif
@@ -22,6 +43,11 @@ inline void terrasSmartOtaLoop();
 #include "terrasmart_ota.h"
 #include <fdrs_gateway.h>
 
+#if defined(FDRS_RUNTIME_CONFIG) && defined(TERRASMART_OTA_MQTT)
+void terrasSmartMqttHandleGatewayCommand(const uint8_t *message,
+                                         unsigned int length);
+#endif
+
 #if !defined(LED_BUILTIN)
 #define LED_BUILTIN 2
 #endif
@@ -35,15 +61,40 @@ bool statusLedState = false;
 bool otaLedActive = false;
 unsigned long lastMqttStatus = 0;
 bool mqttStatusOnline = false;
+bool legacyStatusCleared = false;
+bool commandTopicSubscribed = false;
+bool mqttIdentityInitialized = false;
+char mqttClientId[16] = {};
+char mqttStatusTopic[64] = {};
+char mqttCommandTopic[64] = {};
+char mqttGatewayId[16] = {};
+char mqttOfflinePayload[56] = {};
 
-#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+#if defined(FDRS_RUNTIME_CONFIG)
 constexpr char CONFIG_NAMESPACE[] = "terrasmart";
 constexpr char AP_PASSWORD[] = FDRS_AP_PASSWORD;
 constexpr unsigned long WIFI_RETRY_INTERVAL = 30000;
 
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
 Preferences preferences;
-DNSServer dnsServer;
 WebServer server(80);
+#else
+constexpr size_t EEPROM_CONFIG_SIZE = 512;
+constexpr uint32_t EEPROM_CONFIG_MAGIC = 0x54534346; // "TSCF"
+struct PersistedConfig {
+  uint32_t magic;
+  uint8_t configured;
+  char wifiSsid[33];
+  char wifiPassword[65];
+  char mqttHost[65];
+  uint16_t mqttPort;
+  char mqttUser[33];
+  char mqttPassword[65];
+  uint32_t checksum;
+};
+ESP8266WebServer server(80);
+#endif
+DNSServer dnsServer;
 String wifiSsid;
 String wifiPassword;
 String mqttHost;
@@ -52,9 +103,11 @@ String mqttPassword;
 uint16_t mqttPort = 1883;
 bool runtimeConfigured = false;
 unsigned long lastWifiRetry = 0;
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
 constexpr uint8_t CONFIG_RESET_PIN = 0;
 unsigned long configResetStarted = 0;
 bool configResetHandled = false;
+#endif
 bool networkInitialized = false;
 bool captivePortalStarted = false;
 bool mdnsStarted = false;
@@ -64,6 +117,25 @@ void applyConfiguration();
 void reconfigureNetwork();
 
 String apSsid;
+
+#if defined(ESP8266)
+uint8_t wifiMac[6] = {};
+uint32_t configChecksum(const PersistedConfig &config) {
+  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&config);
+  uint32_t checksum = 2166136261UL;
+  for (size_t i = 0; i < offsetof(PersistedConfig, checksum); ++i) {
+    checksum = (checksum ^ bytes[i]) * 16777619UL;
+  }
+  return checksum;
+}
+
+bool copyField(char *destination, size_t capacity, const String &value) {
+  if (value.length() >= capacity) return false;
+  memset(destination, 0, capacity);
+  value.toCharArray(destination, capacity);
+  return true;
+}
+#endif
 
 String htmlEscape(const String &value) {
   String escaped = value;
@@ -75,28 +147,55 @@ String htmlEscape(const String &value) {
 }
 
 void buildApIdentity() {
-  // Read the chip identity without touching the Wi-Fi/LWIP stack. At this
-  // point setup() has not called beginFDRS() yet.
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   const uint32_t chipSuffix = static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFF);
   char suffix[5];
   snprintf(suffix, sizeof(suffix), "%04lX", static_cast<unsigned long>(chipSuffix));
+#else
+  WiFi.macAddress(wifiMac);
+  char suffix[5];
+  snprintf(suffix, sizeof(suffix), "%02X%02X", wifiMac[4], wifiMac[5]);
+#endif
   apSsid = String("TerraSmart-Setup-") + suffix;
   fdrs_runtime_ap_ssid = apSsid.c_str();
   fdrs_runtime_ap_password = AP_PASSWORD;
 }
 
-void saveConfiguration(bool configured) {
-  preferences.putBool("configured", configured);
-  preferences.putString("wifi_ssid", wifiSsid);
-  preferences.putString("wifi_pass", wifiPassword);
-  preferences.putString("mqtt_host", mqttHost);
-  preferences.putUShort("mqtt_port", mqttPort);
-  preferences.putString("mqtt_user", mqttUser);
-  preferences.putString("mqtt_pass", mqttPassword);
+bool saveConfiguration(bool configured) {
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+  const bool saved =
+      preferences.putBool("configured", configured) > 0 &&
+      preferences.putString("wifi_ssid", wifiSsid) > 0 &&
+      preferences.putString("wifi_pass", wifiPassword) > 0 &&
+      preferences.putString("mqtt_host", mqttHost) > 0 &&
+      preferences.putUShort("mqtt_port", mqttPort) > 0 &&
+      preferences.putString("mqtt_user", mqttUser) > 0 &&
+      preferences.putString("mqtt_pass", mqttPassword) > 0;
+  if (!saved) return false;
+#elif defined(ESP8266)
+  PersistedConfig saved = {};
+  saved.magic = EEPROM_CONFIG_MAGIC;
+  saved.configured = configured ? 1 : 0;
+  saved.mqttPort = mqttPort;
+  const String savedWifiSsid = configured ? wifiSsid : "";
+  const String savedWifiPassword = configured ? wifiPassword : "";
+  if (!copyField(saved.wifiSsid, sizeof(saved.wifiSsid), savedWifiSsid) ||
+      !copyField(saved.wifiPassword, sizeof(saved.wifiPassword),
+                 savedWifiPassword) ||
+      !copyField(saved.mqttHost, sizeof(saved.mqttHost), mqttHost) ||
+      !copyField(saved.mqttUser, sizeof(saved.mqttUser), mqttUser) ||
+      !copyField(saved.mqttPassword, sizeof(saved.mqttPassword), mqttPassword))
+    return false;
+  saved.checksum = configChecksum(saved);
+  EEPROM.put(0, saved);
+  if (!EEPROM.commit()) return false;
+#endif
   runtimeConfigured = configured;
+  return true;
 }
 
 void loadConfiguration() {
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   preferences.begin(CONFIG_NAMESPACE, false);
 
   if (!preferences.isKey("configured")) {
@@ -117,6 +216,33 @@ void loadConfiguration() {
     mqttUser = preferences.getString("mqtt_user", "");
     mqttPassword = preferences.getString("mqtt_pass", "");
   }
+#elif defined(ESP8266)
+  EEPROM.begin(EEPROM_CONFIG_SIZE);
+  PersistedConfig saved = {};
+  EEPROM.get(0, saved);
+  const bool valid = saved.magic == EEPROM_CONFIG_MAGIC &&
+                     saved.checksum == configChecksum(saved) &&
+                     saved.mqttPort > 0;
+  if (valid) {
+    runtimeConfigured = saved.configured == 1;
+    wifiSsid = runtimeConfigured ? saved.wifiSsid : "";
+    wifiPassword = saved.wifiPassword;
+    mqttHost = saved.mqttHost;
+    mqttPort = saved.mqttPort;
+    mqttUser = saved.mqttUser;
+    mqttPassword = saved.mqttPassword;
+  } else {
+    runtimeConfigured = false;
+    wifiSsid = WIFI_SSID;
+    wifiPassword = WIFI_PASS;
+    mqttHost = MQTT_ADDR;
+    mqttPort = MQTT_PORT;
+    mqttUser = MQTT_USER;
+    mqttPassword = MQTT_PASS;
+    if (wifiSsid.length() && mqttHost.length()) saveConfiguration(true);
+    else saveConfiguration(false);
+  }
+#endif
 
   if (!runtimeConfigured) {
     wifiSsid = "";
@@ -129,7 +255,13 @@ void loadConfiguration() {
 }
 
 void resetConfiguration() {
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   preferences.clear();
+#elif defined(ESP8266)
+  PersistedConfig empty = {};
+  EEPROM.put(0, empty);
+  EEPROM.commit();
+#endif
   runtimeConfigured = false;
   wifiSsid = "";
   wifiPassword = "";
@@ -140,6 +272,7 @@ void resetConfiguration() {
 }
 
 void handlePhysicalReset() {
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   pinMode(CONFIG_RESET_PIN, INPUT_PULLUP);
   if (digitalRead(CONFIG_RESET_PIN) != LOW) {
     return;
@@ -154,6 +287,7 @@ void handlePhysicalReset() {
     reconfigureNetwork();
     configResetHandled = true;
   }
+#endif
 }
 
 String jsonEscape(const String &value) {
@@ -186,6 +320,10 @@ void reconfigureNetwork() {
     WiFi.softAP(fdrs_runtime_ap_ssid, fdrs_runtime_ap_password);
   }
   WiFi.disconnect(false, false);
+  if (!runtimeConfigured) {
+    wifiSsid = "";
+    applyConfiguration();
+  }
   if (runtimeConfigured && wifiSsid.length() > 0) {
     WiFi.begin(ssid, password);
   }
@@ -218,7 +356,9 @@ String networkStatus() {
 
 String statusJson() {
   String json = "{";
-  json += "\"configured\":" + String(runtimeConfigured ? "true" : "false");
+  json += "\"gateway_id\":\"" + String(terrasSmartMqttGatewayId()) + "\"";
+  json += ",\"command_topic\":\"" + String(terrasSmartMqttCommandTopic()) + "\"";
+  json += ",\"configured\":" + String(runtimeConfigured ? "true" : "false");
   json += ",\"network\":\"" + networkStatus() + "\"";
   json += ",\"ssid\":\"" + jsonEscape(wifiSsid) + "\"";
   json += ",\"sta_connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
@@ -232,12 +372,13 @@ String statusJson() {
   json += ",\"mqtt_connected\":" + String(client.connected() ? "true" : "false");
   json += ",\"mqtt_host\":\"" + jsonEscape(mqttHost) + "\"";
   json += ",\"mqtt_port\":" + String(mqttPort);
+  json += ",\"mac\":\"" + WiFi.macAddress() + "\"";
   json += "}";
   return json;
 }
 
 String wifiNetworksJson() {
-  const wifi_mode_t previousMode = WiFi.getMode();
+  const auto previousMode = WiFi.getMode();
   if (previousMode == WIFI_AP) {
     WiFi.mode(WIFI_AP_STA);
   }
@@ -250,7 +391,12 @@ String wifiNetworksJson() {
     }
     json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i));
     json += "\",\"rssi\":" + String(WiFi.RSSI(i));
-    json += ",\"secure\":" + String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "false" : "true");
+#if defined(ESP8266)
+    const bool secure = WiFi.encryptionType(i) != AUTH_OPEN;
+#else
+    const bool secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+#endif
+    json += ",\"secure\":" + String(secure ? "true" : "false");
     json += "}";
   }
   json += "]";
@@ -264,10 +410,16 @@ String wifiNetworksJson() {
 
 String page() {
   String body;
-  body.reserve(5000);
+  body.reserve(5700);
   body += F("<!doctype html><html lang='pt-BR'><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>TerraSmart Gateway</title><style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem;background:#f5f7f2;color:#172018}label{display:block;margin-top:1rem;font-weight:600}input{box-sizing:border-box;width:100%;padding:.65rem;border:1px solid #aab5a8;border-radius:6px;font-size:1rem}button{margin-top:1.25rem;padding:.7rem 1rem;border:0;border-radius:6px;background:#176b45;color:white;font-weight:700}button.danger{background:#a52e2e}.card{background:white;padding:1rem 1.25rem;margin:1rem 0;border-radius:10px;box-shadow:0 1px 4px #0002}code{word-break:break-all}</style>");
-  body += F("<h1>TerraSmart Gateway</h1><div class='card'><h2>Status</h2><pre id='status'>");
+  body += F("<h1>TerraSmart Gateway</h1><div class='card'><h2>Status</h2><p>ID MQTT: <code>");
+  body += terrasSmartMqttGatewayId();
+  body += F("</code><br>MAC Wi-Fi: <code>");
+  body += WiFi.macAddress();
+  body += F("</code><br>Topico de comandos FDRS: <code>");
+  body += terrasSmartMqttCommandTopic();
+  body += F("</code></p><pre id='status'>");
   body += statusJson();
   body += F("</pre><p>AP de configuracao: <code>");
   body += htmlEscape(apSsid);
@@ -300,13 +452,53 @@ void handleSave() {
     server.send(400, "text/plain", "Porta MQTT invalida.");
     return;
   }
-  wifiSsid = server.arg("wifi_ssid");
-  wifiPassword = server.arg("wifi_pass");
-  mqttHost = server.arg("mqtt_host");
+  const String requestedWifiSsid = server.arg("wifi_ssid");
+  const String requestedWifiPassword = server.arg("wifi_pass");
+  const String requestedMqttHost = server.arg("mqtt_host");
+  const String requestedMqttUser = server.arg("mqtt_user");
+  const String requestedMqttPassword = server.arg("mqtt_pass");
+#if defined(ESP8266)
+  PersistedConfig validation = {};
+  const bool fieldsFit =
+      copyField(validation.wifiSsid, sizeof(validation.wifiSsid),
+                requestedWifiSsid) &&
+      copyField(validation.wifiPassword, sizeof(validation.wifiPassword),
+                requestedWifiPassword) &&
+      copyField(validation.mqttHost, sizeof(validation.mqttHost),
+                requestedMqttHost) &&
+      copyField(validation.mqttUser, sizeof(validation.mqttUser),
+                requestedMqttUser) &&
+      copyField(validation.mqttPassword, sizeof(validation.mqttPassword),
+                requestedMqttPassword);
+  if (!fieldsFit) {
+    server.send(400, "text/plain", "Um ou mais campos excedem o limite permitido.");
+    return;
+  }
+#endif
+  const String previousWifiSsid = wifiSsid;
+  const String previousWifiPassword = wifiPassword;
+  const String previousMqttHost = mqttHost;
+  const String previousMqttUser = mqttUser;
+  const String previousMqttPassword = mqttPassword;
+  const uint16_t previousMqttPort = mqttPort;
+  const bool previousRuntimeConfigured = runtimeConfigured;
+  wifiSsid = requestedWifiSsid;
+  wifiPassword = requestedWifiPassword;
+  mqttHost = requestedMqttHost;
   mqttPort = static_cast<uint16_t>(requestedPort);
-  mqttUser = server.arg("mqtt_user");
-  mqttPassword = server.arg("mqtt_pass");
-  saveConfiguration(true);
+  mqttUser = requestedMqttUser;
+  mqttPassword = requestedMqttPassword;
+  if (!saveConfiguration(true)) {
+    wifiSsid = previousWifiSsid;
+    wifiPassword = previousWifiPassword;
+    mqttHost = previousMqttHost;
+    mqttPort = previousMqttPort;
+    mqttUser = previousMqttUser;
+    mqttPassword = previousMqttPassword;
+    runtimeConfigured = previousRuntimeConfigured;
+    server.send(500, "text/plain", "Falha ao salvar a configuracao.");
+    return;
+  }
   server.send(200, "text/html", "<p>Configuracao salva. O AP continua ativo enquanto o gateway tenta conectar ao Wi-Fi.</p><p><a href='/'>Voltar</a></p>");
   reconfigureNetwork();
 }
@@ -351,23 +543,65 @@ void maintainCaptivePortal() {
 }
 
 void maintainWifi() {
-  if (!runtimeConfigured || WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED) {
     return;
   }
   if (WiFi.softAPIP() == IPAddress(0, 0, 0, 0)) {
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(fdrs_runtime_ap_ssid, fdrs_runtime_ap_password);
   }
-  if (millis() - lastWifiRetry >= WIFI_RETRY_INTERVAL) {
+  if (runtimeConfigured && wifiSsid.length() > 0 &&
+      millis() - lastWifiRetry >= WIFI_RETRY_INTERVAL) {
     lastWifiRetry = millis();
     WiFi.begin(ssid, password);
   }
 }
 #endif
 
+void initializeMqttIdentity() {
+  if (mqttIdentityInitialized) {
+    return;
+  }
+
+  uint8_t mac[6] = {};
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+  WiFi.macAddress(mac);
+#else
+  memcpy(mac, wifiMac, sizeof(mac));
+#endif
+  if (!terrasSmart::formatMqttClientId(mac, mqttClientId,
+                                       sizeof(mqttClientId)) ||
+      !terrasSmart::formatMqttStatusTopic(mac, mqttStatusTopic,
+                                          sizeof(mqttStatusTopic)) ||
+      !terrasSmart::formatMqttCommandTopic(mac, mqttCommandTopic,
+                                           sizeof(mqttCommandTopic)) ||
+      !terrasSmart::formatMqttGatewayId(mac, mqttGatewayId,
+                                        sizeof(mqttGatewayId))) {
+    mqttClientId[0] = '\0';
+    mqttStatusTopic[0] = '\0';
+    mqttCommandTopic[0] = '\0';
+    mqttGatewayId[0] = '\0';
+    mqttOfflinePayload[0] = '\0';
+    return;
+  }
+  if (!terrasSmart::formatMqttOfflinePayload(
+          mqttGatewayId, mqttOfflinePayload, sizeof(mqttOfflinePayload))) {
+    mqttIdentityInitialized = false;
+    mqttClientId[0] = '\0';
+    mqttStatusTopic[0] = '\0';
+    mqttCommandTopic[0] = '\0';
+    mqttGatewayId[0] = '\0';
+    mqttOfflinePayload[0] = '\0';
+    return;
+  }
+  mqttIdentityInitialized = true;
+}
+
 String mqttStatusPayload(const char *event) {
+  initializeMqttIdentity();
   String json = "{";
   json += "\"event\":\"" + String(event) + "\"";
+  json += ",\"gateway_id\":\"" + String(mqttGatewayId) + "\"";
   json += ",\"uptime_s\":" + String(millis() / 1000UL);
   json += ",\"wifi_connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
   json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
@@ -386,9 +620,29 @@ String mqttStatusPayload(const char *event) {
 }
 
 void maintainMqttStatus() {
-  if (!client.connected()) {
+  initializeMqttIdentity();
+  if (!mqttIdentityInitialized) {
     mqttStatusOnline = false;
     return;
+  }
+  if (!client.connected()) {
+    mqttStatusOnline = false;
+    commandTopicSubscribed = false;
+    return;
+  }
+
+  if (!legacyStatusCleared &&
+      client.publish("terrasmart/status", "", true)) {
+    legacyStatusCleared = true;
+  }
+
+  if (!commandTopicSubscribed) {
+    commandTopicSubscribed = client.subscribe(terrasSmartMqttCommandTopic());
+#if defined(ESP8266)
+    if (commandTopicSubscribed && !legacyStatusCleared) {
+      client.unsubscribe(TOPIC_COMMAND);
+    }
+#endif
   }
 
   const unsigned long now = millis();
@@ -398,38 +652,83 @@ void maintainMqttStatus() {
 
   const char *event = mqttStatusOnline ? "heartbeat" : "online";
   const String payload = mqttStatusPayload(event);
-  if (client.publish(TOPIC_STATUS, payload.c_str(), true)) {
+  if (client.publish(terrasSmartMqttStatusTopic(), payload.c_str(), true)) {
     lastMqttStatus = now;
     mqttStatusOnline = true;
   }
 }
 
 void setStatusLed(bool on) {
-  // This MQTT gateway board's built-in LED is active-high.
+#if defined(ESP8266)
+  // The D1 mini Pro's built-in LED is active-low.
+  digitalWrite(STATUS_LED, on ? LOW : HIGH);
+#else
   digitalWrite(STATUS_LED, on ? HIGH : LOW);
+#endif
 }
 
 void updateStatusLed() {
   const unsigned long now = millis();
   const bool updating = terrasSmartOtaUpdateInProgress();
-  if (!updating) {
-    otaLedActive = false;
-    statusLedState = false;
-    setStatusLed(false);
+  if (updating) {
+    otaLedActive = true;
+    if (now - lastStatusLedToggle >= OTA_STATUS_LED_BLINK_INTERVAL_MS) {
+      lastStatusLedToggle = now;
+      statusLedState = !statusLedState;
+      setStatusLed(statusLedState);
+    }
     return;
   }
-  if (!otaLedActive) {
-    otaLedActive = true;
-    lastStatusLedToggle = now;
-    statusLedState = false;
-    setStatusLed(false);
+
+  otaLedActive = false;
+  const bool wifiConnected = WiFi.status() == WL_CONNECTED;
+  const bool mqttConnected = client.connected();
+  if (wifiConnected && mqttConnected) {
+    statusLedState = true;
+    setStatusLed(true);
+    return;
   }
-  if (now - lastStatusLedToggle >= OTA_STATUS_LED_BLINK_INTERVAL_MS) {
+
+  const unsigned long blinkInterval =
+      wifiConnected ? 800 :
+      (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) ? 300 : 150;
+  if (now - lastStatusLedToggle >= blinkInterval) {
     lastStatusLedToggle = now;
     statusLedState = !statusLedState;
     setStatusLed(statusLedState);
   }
 }
+}
+
+const char *terrasSmartMqttClientId() {
+  initializeMqttIdentity();
+  return mqttIdentityInitialized ? mqttClientId : "";
+}
+
+const char *terrasSmartMqttStatusTopic() {
+  initializeMqttIdentity();
+  return mqttIdentityInitialized ? mqttStatusTopic : "";
+}
+
+const char *terrasSmartMqttCommandTopic() {
+  initializeMqttIdentity();
+  return mqttIdentityInitialized ? mqttCommandTopic : "";
+}
+
+bool terrasSmartMqttCommandTopicMatches(const char *topic) {
+  if (topic == nullptr) return false;
+  initializeMqttIdentity();
+  return mqttIdentityInitialized && strcmp(topic, mqttCommandTopic) == 0;
+}
+
+const char *terrasSmartMqttGatewayId() {
+  initializeMqttIdentity();
+  return mqttIdentityInitialized ? mqttGatewayId : "";
+}
+
+const char *terrasSmartMqttOfflinePayload() {
+  initializeMqttIdentity();
+  return mqttIdentityInitialized ? mqttOfflinePayload : "{\"event\":\"offline\"}";
 }
 
 void terrasSmartOtaServiceStatusLed() {
@@ -444,6 +743,12 @@ void setup() {
   loadConfiguration();
   handlePhysicalReset();
   applyConfiguration();
+#elif defined(ESP8266) && defined(FDRS_RUNTIME_CONFIG)
+  WiFi.mode(WIFI_STA);
+  WiFi.macAddress(wifiMac);
+  buildApIdentity();
+  loadConfiguration();
+  applyConfiguration();
 #endif
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   // Keep complete hex-encoded OTA UART frames in the RX ring if loopFDRS()
@@ -452,17 +757,23 @@ void setup() {
 #endif
   beginFDRS();
 #if defined(TERRASMART_OTA_MQTT)
-  Serial1.setTimeout(20);
-#endif
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+  Serial1.setTimeout(20);
+#else
+  Serial.setTimeout(20);
+#endif
+#endif
+#if defined(FDRS_RUNTIME_CONFIG)
   networkInitialized = true;
   startWebServer();
 #endif
 }
 
 void loop() {
+#if defined(FDRS_RUNTIME_CONFIG)
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   handlePhysicalReset();
+#endif
   maintainCaptivePortal();
   server.handleClient();
   maintainWifi();
@@ -478,4 +789,29 @@ void loop() {
   // for status. On ESP8266 this is the main UART and cannot be monitored
   // while the gateway link is connected.
   updateStatusLed();
+}
+
+void terrasSmartMqttHandleGatewayCommand(const uint8_t *message,
+                                         unsigned int length) {
+  if (message == nullptr || length == 0) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, message, length)) return;
+  const JsonArray readings = doc.as<JsonArray>();
+  if (readings.isNull() || readings.size() == 0 || readings.size() > 255) return;
+
+  for (size_t i = 0; i < readings.size(); ++i) {
+    JsonObjectConst reading = readings[i].as<JsonObjectConst>();
+    if (!reading["id"].is<uint16_t>() || !reading["type"].is<uint8_t>() ||
+        !reading["data"].is<float>()) {
+      return;
+    }
+  }
+
+  for (size_t i = 0; i < readings.size(); ++i) {
+    theData[i].id = readings[i]["id"].as<uint16_t>();
+    theData[i].t = readings[i]["type"].as<uint8_t>();
+    theData[i].d = readings[i]["data"].as<float>();
+  }
+  ln = static_cast<uint8_t>(readings.size());
+  newData = event_mqtt;
 }

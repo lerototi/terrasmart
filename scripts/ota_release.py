@@ -21,6 +21,7 @@ TARGETS = {
     "d1_mini_relay_node": (20, "d1_mini_relay_node.bin"),
     "esp32dev_gateway": (1, "esp32dev_gateway.bin"),
     "esp32dev_mqtt_gateway": (0, "esp32dev_mqtt_gateway.bin"),
+    "d1_mini_mqtt_gateway": (0, "d1_mini_mqtt_gateway.bin"),
 }
 FORWARDED_IMAGE_LIMITS = {
     1: 0x1E0000,  # ESP-NOW gateway OTA slot from partitions_ota.csv
@@ -53,6 +54,10 @@ def main():
         )
     )
     parser.add_argument("--env", required=True, choices=sorted(TARGETS))
+    parser.add_argument(
+        "--gateway-id",
+        help="stable gateway_id that must execute this OTA command (gw-<MAC>)",
+    )
     parser.add_argument(
         "--www-dir",
         help="local path to Home Assistant's www directory (overrides ota_config.json)",
@@ -109,6 +114,13 @@ def main():
             "size": size,
             "crc32": crc32,
         }
+        gateway_id = args.gateway_id or config.get("ota_gateway_id")
+        if not gateway_id:
+            raise RuntimeError(
+                "Set ota_gateway_id to the target pair's gateway_id before "
+                "preparing an OTA command."
+            )
+        command["gateway_id"] = gateway_id
         payload = json.dumps(command, separators=(",", ":"))
 
         payload_file = args.payload_file

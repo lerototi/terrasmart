@@ -11,12 +11,13 @@ The supported PlatformIO environments are:
 - `d1_mini_relay_node`: Wemos D1 mini two-channel relay node based on ESP8266.
 - `wemos_d1_mini32_node`: Wemos D1 mini32 sensor node based on ESP32.
 - `esp32dev_gateway`: ESP32 DevKit V1 ESP-NOW gateway.
-- `d1_mini_mqtt_gateway`: Wemos D1 mini Wi-Fi/MQTT front-end gateway.
+- `d1_mini_mqtt_gateway`: Wemos D1 mini Pro (ESP8266EX) Wi-Fi/MQTT front-end gateway.
 - `esp32dev_mqtt_gateway`: ESP32 DevKit V1 Wi-Fi/MQTT front-end gateway.
 
-The ESP32 MQTT gateway is the current deployment. The D1 mini MQTT gateway
-remains supported as an alternative, and all MQTT gateway documentation below
-applies to both environments.
+The ESP32 MQTT gateway was used in the previous deployment. The D1 mini Pro MQTT
+gateway is now the selected alternative for the ESP-NOW ESP32 pair. Both MQTT
+environments remain supported; ESP32-specific setup instructions apply only to
+`esp32dev_mqtt_gateway`.
 
 ## First test
 
@@ -54,12 +55,18 @@ The radio gateway and MQTT gateway are separate devices. Upload
 `esp32dev_gateway` to the ESP32 handling ESP-NOW. Upload exactly one of the
 following MQTT environments to the second device:
 
-- `esp32dev_mqtt_gateway` for the current ESP32 DevKit deployment.
-- `d1_mini_mqtt_gateway` for the Wemos D1 mini alternative.
+- `d1_mini_mqtt_gateway` for the Wemos D1 mini Pro (ESP8266EX) MQTT gateway.
+- `esp32dev_mqtt_gateway` for the ESP32 DevKit MQTT gateway alternative.
 
 Do not upload either MQTT environment to the radio gateway. Both MQTT
 environments intentionally define only `USE_WIFI` and cannot accept ESP-NOW
 node registration requests.
+
+Both MQTT gateway environments now provide the setup AP/web configuration page,
+per-device MQTT identity/status, runtime Wi-Fi/MQTT credentials and OTA commands
+from the broker. The Wemos stores configuration in emulated EEPROM; the ESP32
+uses NVS. On the shared broker, OTA commands must include the target
+`gateway_id`, so only that gateway pair accepts the command.
 
 In FDRS, do not enable `USE_WIFI` together with `USE_ESPNOW` in this gateway. To send data to Wi-Fi/MQTT, use a second gateway configured as an MQTT gateway and connect the two gateways through UART with crossed RX/TX pins:
 
@@ -81,20 +88,20 @@ The MQTT data payload is a JSON array, for example:
 [{"id":1,"type":1,"data":23.4},{"id":1,"type":3,"data":65.2}]
 ```
 
-Subscribe to `terrasmart/data` in Home Assistant. `terrasmart/status` reports gateway status and `terrasmart/command` is used for commands.
+Subscribe to `terrasmart/data` in Home Assistant. Each MQTT gateway reports status independently to `terrasmart/gateways/<MAC>/status`, where `<MAC>` is its Wi-Fi MAC in uppercase hexadecimal without separators. Its MQTT client ID is `ts-<MAC>`, and the status payload includes `gateway_id` as `gw-<MAC>`. The setup portal displays the pair-specific FDRS command topic, `terrasmart/gateways/<MAC>/command`; use that topic to control only nodes behind that gateway. Runtime-config gateway firmware subscribes to its private command topic; older firmware may still use the legacy shared `terrasmart/command` topic.
 
-The MQTT gateway publishes a retained JSON status message to `terrasmart/status`:
+The MQTT gateway publishes a retained JSON status message to its per-device status topic, for example `terrasmart/gateways/246F2801ABCD/status`:
 
 ```json
-{"event":"online","uptime_s":12,"wifi_connected":true,"ip":"10.0.0.50","rssi":-55,"mqtt_connected":true,"configured":true,"ap_ip":"192.168.4.1","mqtt_host":"10.0.0.216","mqtt_port":1883}
+{"event":"online","gateway_id":"gw-246F2801ABCD","uptime_s":12,"wifi_connected":true,"ip":"10.0.0.50","rssi":-55,"mqtt_connected":true,"configured":true,"ap_ip":"192.168.4.1","mqtt_host":"10.0.0.216","mqtt_port":1883}
 ```
 
-The `online` event is published after the gateway successfully connects to MQTT. A `heartbeat` event is published every 30 seconds. The MQTT Last Will replaces the retained message with `{"event":"offline"}` when the broker detects an unexpected disconnect. The retained message means a subscriber can connect after startup and still receive the latest status.
+The `online` event is published after the gateway successfully connects to MQTT. A `heartbeat` event is published every 30 seconds. The MQTT Last Will replaces the retained message with an `offline` event containing that gateway's ID when the broker detects an unexpected disconnect. On its first successful connection, updated firmware also clears the old retained `terrasmart/status` message. The retained per-gateway message means a subscriber can connect after startup and still receive the latest status.
 
-To monitor the status from a terminal:
+To monitor status from all gateways in a terminal:
 
 ```bash
-mosquitto_sub -h 10.0.0.216 -p 1883 -u mqtt-user -P 'your-mqtt-password' -t terrasmart/status -v
+mosquitto_sub -h 10.0.0.216 -p 1883 -u mqtt-user -P 'your-mqtt-password' -t 'terrasmart/gateways/+/status' -v
 ```
 
 The previous one-time `FDRS initialized` message was removed because it could be lost when no subscriber was connected during boot.
@@ -179,15 +186,26 @@ The built-in LED behavior for the ESP32 MQTT gateway is:
 - medium blink: setup AP active;
 - fast blink: no Wi-Fi and no setup AP.
 
-The AP password is configured as `FDRS_AP_PASSWORD` in the ignored shared secrets
-file. Do not commit that file.
+The setup AP password is configured as `FDRS_AP_PASSWORD` in the ignored shared
+secrets file. Do not commit that file. On the Wemos, the AP SSID is
+`TerraSmart-Setup-<last-four-MAC-hex>`; its AP password and URL are the same as
+the ESP32 portal. Configuration is persisted in the Wemos EEPROM emulation and
+the AP remains available alongside the configured Wi-Fi connection.
 
-For the D1 mini MQTT gateway, disconnect the TX/RX wires to the ESP32 first.
-Select the serial port that disappears when the Wemos is unplugged, then
-upload at 115200 baud. `/dev/ttyUSB0` is an FT232 adapter in the current setup,
-while `/dev/ttyACM0` is another USB serial device; do not assume either one is
-the Wemos without checking. The ESP32 MQTT gateway uses its USB serial port
-for monitoring, so its UART link can remain connected during normal monitoring.
+For the D1 mini Pro MQTT gateway, disconnect the TX/RX wires to the ESP32 first.
+Select the serial port that disappears when the Wemos is unplugged, then upload
+at 115200 baud. Do not assume `/dev/ttyUSB0` belongs to the Wemos: in the current
+setup it is the ESP32 CP2102 USB bridge. The D1 mini environment intentionally
+does not pin an upload/monitor port, to avoid accidentally flashing the ESP32
+with an ESP8266 image. Identify the port with `pio device list`, then pass it
+explicitly to PlatformIO. In the current connection, the Wemos appears as
+`/dev/ttyUSB1` (CP2104), while the ESP32 was previously `/dev/ttyUSB0` (CP2102).
+Verify the Wemos port before each upload because port numbers can change:
+
+```bash
+pio run -e d1_mini_mqtt_gateway -t upload --upload-port /dev/ttyUSB1
+pio device monitor --port /dev/ttyUSB1 --baud 115200
+```
 
 Connect UART lines crossed and connect grounds together:
 
@@ -197,16 +215,25 @@ ESP-NOW gateway RX <- MQTT gateway TX
 ESP-NOW gateway GND -> MQTT gateway GND
 ```
 
-For the current ESP32-to-ESP32 installation, upload `esp32dev_gateway` to the
-ESP-NOW ESP32 and `esp32dev_mqtt_gateway` to the MQTT ESP32. Both boards use a
-dedicated link on GPIO16/GPIO17, leaving each USB serial monitor available.
+For the selected ESP32-to-Wemos installation, upload `esp32dev_gateway` to the
+ESP-NOW ESP32 and `d1_mini_mqtt_gateway` to the Wemos D1 mini Pro. The ESP32 uses a dedicated
+UART link on GPIO16/GPIO17; the Wemos uses its main UART pins, which are also
+connected to USB.
 
-The D1 mini MQTT gateway is also supported. In that alternative, upload
-`d1_mini_mqtt_gateway` to the Wemos D1 mini. Its main serial interface is used
-for the UART link, so its FDRS debug output is not available while the link is
+The `esp32dev_mqtt_gateway` alternative keeps USB serial monitoring separate
+from the UART link. The selected Wemos D1 mini Pro MQTT gateway uses its main serial
+interface for UART, so its FDRS debug output is not available while the link is
 connected.
 
-Current ESP32-to-ESP32 wiring:
+Selected ESP32-to-Wemos wiring:
+
+```text
+ESP-NOW ESP32 GPIO17 (TX) -> D1 mini Pro RX (GPIO3/RX)
+ESP-NOW ESP32 GPIO16 (RX) <- D1 mini Pro TX (GPIO1/TX)
+ESP-NOW ESP32 GND         -> D1 mini Pro GND
+```
+
+Alternative ESP32-to-ESP32 wiring:
 
 ```text
 ESP-NOW ESP32 GPIO17 (TX) -> MQTT ESP32 GPIO16 (RX)
@@ -214,20 +241,29 @@ ESP-NOW ESP32 GPIO16 (RX) <- MQTT ESP32 GPIO17 (TX)
 ESP-NOW ESP32 GND         -> MQTT ESP32 GND
 ```
 
-Alternative ESP32-to-D1-mini wiring:
-
-```text
-ESP-NOW ESP32 GPIO17 (TX) -> D1 mini RX (GPIO3/RX)
-ESP-NOW ESP32 GPIO16 (RX) <- D1 mini TX (GPIO1/TX)
-ESP-NOW ESP32 GND         -> D1 mini GND
-```
-
-Disconnect the TX/RX wires from the D1 mini while uploading firmware to it,
+Disconnect the TX/RX wires from the D1 mini Pro while uploading firmware to it,
 because its main UART is also the USB upload/monitor interface. Reconnect them
-after the upload. The ESP32 MQTT gateway does not require this disconnection.
-Use only 3.3 V logic levels.
+after upload. The ESP32 MQTT gateway does not require this disconnection. Use
+only 3.3 V logic levels.
 
-If automatic reset does not enter bootloader mode, hold the Wemos `FLASH/BOOT` button, start the upload, release it when `Connecting...` appears, and press `RST` once. If the board has no BOOT button, briefly connect GPIO0 to GND while resetting, then remove the connection after upload begins.
+If upload prints `Failed to connect to ESP8266: Timed out waiting for packet header`, the binary built but the Wemos did not enter its serial bootloader. A board with a single button may have only `RST`; holding that button alone will not select upload mode. Keep UART TX/RX disconnected and use the GPIO0 header pin:
+
+1. Start the upload to the verified Wemos port:
+
+   ```bash
+   pio run -e d1_mini_mqtt_gateway -t upload --upload-port /dev/ttyUSB1
+   ```
+
+2. When esptool prints `Connecting...`, briefly connect GPIO0 (D3) to GND.
+3. While GPIO0 is held to GND, briefly press and release the board's single
+   button to reset it.
+4. Release GPIO0 from GND as soon as the reset button is released, then wait for
+   esptool to connect and finish the upload.
+
+Use the GPIO0 header pin and GND only; do not short the 3V3 or VIN pins. Check
+that the selected port belongs to the Wemos, the USB cable supports data, and no
+serial monitor is holding the port. After upload succeeds, press the button once
+to reset normally, then reconnect UART TX/RX.
 
 In VS Code, select the environment from the PlatformIO status bar, then use **Upload**. The serial monitor is available with **Monitor**.
 
