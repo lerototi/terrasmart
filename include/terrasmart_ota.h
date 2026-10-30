@@ -7,6 +7,7 @@
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY) || defined(TERRASMART_OTA_MQTT)
 #if defined(ESP8266)
 #include <Updater.h>
+#include <ESP8266HTTPClient.h>
 #define TERRASMART_OTA_ABORT() Update.end(true)
 #else
 #include <Update.h>
@@ -15,12 +16,18 @@
 #endif
 
 #if defined(TERRASMART_OTA_MQTT)
+#if defined(ESP8266)
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecureBearSSL.h>
+#else
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#endif
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 extern PubSubClient client;
 void terrasSmartOtaServiceStatusLed();
+const char *terrasSmartMqttGatewayId();
 #endif
 
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY)
@@ -273,7 +280,11 @@ inline void serviceEspNow() {
 
 #if defined(TERRASMART_OTA_ESPNOW_GATEWAY)
   if (packet.type == Type::Ack) {
+#if defined(ESP8266)
+    Serial.println(toUartLine(packet));
+#else
     Serial1.println(toUartLine(packet));
+#endif
     if (forwardedUpdateInProgress && packet.target == forwardedUpdateTarget) {
       forwardedUpdateLastActivity = millis();
       if (packet.sequence == forwardedBeginSequence || packet.sequence <= 12 ||
@@ -342,9 +353,8 @@ inline bool handleUartLine(const String &line) {
     }
     Serial.printf("OTA UART ACK sent: target=%u sequence=%u status=%u\n",
                   packet.target, packet.sequence, status);
-    Serial1.println(toUartLine(makePacket(Type::Ack, packet.target,
-                                          packet.sequence, &status, 1)));
-    Serial1.flush();
+      otaWriteUartLine(toUartLine(makePacket(Type::Ack, packet.target,
+                                             packet.sequence, &status, 1)));
     if (isEnd && status == STATUS_OK) {
       Serial.println("OTA_SUCCESS: ESP-NOW gateway firmware updated; restarting");
       Serial.flush();
@@ -507,7 +517,12 @@ inline bool beginFirmwareDownload(HTTPClient &http, const String &url,
                                   WiFiClientSecure &secureClient) {
   if (url.startsWith("https://")) {
 #if defined(TERRASMART_OTA_ROOT_CA)
+#if defined(ESP8266)
+    static BearSSL::X509List certificate(TERRASMART_OTA_ROOT_CA);
+    secureClient.setTrustAnchors(&certificate);
+#else
     secureClient.setCACert(TERRASMART_OTA_ROOT_CA);
+#endif
     return http.begin(secureClient, url);
 #else
     Serial.println("OTA refused: HTTPS requires TERRASMART_OTA_ROOT_CA");
@@ -637,17 +652,37 @@ inline bool handleMqttCommand(JsonDocument &doc) {
   String url;
   uint32_t size;
   uint32_t crc;
+  if (!doc["gateway_id"].is<const char *>() ||
+      doc["gateway_id"].as<String>() != String(terrasSmartMqttGatewayId())) {
+    Serial.printf("OTA MQTT command ignored by gateway_id=%s\n",
+                  terrasSmartMqttGatewayId());
+    return false;
+  }
   if (!parseUpdateCommand(doc, target, url, size, crc)) {
     Serial.println("OTA command rejected: invalid fields, URL, size, or CRC");
     return false;
   }
   Serial.printf("OTA MQTT command accepted: target=%u size=%lu url=%s\n", target,
                 static_cast<unsigned long>(size), url.c_str());
-#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   if (target == TERRASMART_OTA_MQTT_DEVICE_ID) {
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+    updateInProgress = true;
     const bool result = performGatewayUpdate(url, size, crc);
-    if (!result) Serial.println("OTA target 0: failed");
+    updateInProgress = false;
+    if (!result) Serial.println("OTA MQTT gateway update failed");
     return result;
+#elif defined(ESP8266)
+    updateInProgress = true;
+    const bool result = performGatewayUpdate(url, size, crc);
+    updateInProgress = false;
+    if (!result) Serial.println("OTA MQTT gateway update failed");
+    return result;
+#endif
+  }
+#if defined(ESP8266)
+  if (target == TERRASMART_OTA_ESPNOW_TARGET_ID) {
+    Serial.println("OTA ESP-NOW gateway target rejected: D1 mini MQTT firmware has no ESP-NOW radio");
+    return false;
   }
 #endif
   updateInProgress = true;
@@ -659,7 +694,65 @@ inline bool handleMqttCommand(JsonDocument &doc) {
 
 inline bool performGatewayUpdate(const String &url, uint32_t size,
                                  uint32_t expectedCrc) {
-  if (size == 0 || size > 1200000UL) return false;
+#if defined(ESP8266)
+  if (size == 0 || size > TERRASMART_OTA_FORWARD_LIMIT || !WiFi.isConnected()) {
+    Serial.println("OTA MQTT gateway update rejected: size or Wi-Fi state invalid");
+    return false;
+  }
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  HTTPClient http;
+  if (!beginFirmwareDownload(http, url, plainClient, secureClient)) return false;
+  const int response = http.GET();
+  if (response != HTTP_CODE_OK || http.getSize() != static_cast<int>(size) ||
+      !Update.begin(size)) {
+    Serial.printf("OTA Wemos download/update begin failed: HTTP=%d expected=%lu received=%d\n",
+                  response, static_cast<unsigned long>(size), http.getSize());
+    http.end();
+    return false;
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  uint8_t buffer[512];
+  uint32_t remaining = size;
+  uint32_t crcState = 0xFFFFFFFFUL;
+  bool success = true;
+  while (remaining > 0 && success) {
+    const size_t wanted = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+    size_t received = 0;
+    const uint32_t started = millis();
+    while (received < wanted && millis() - started < 10000) {
+      if (stream->available()) {
+        received += stream->readBytes(buffer + received, wanted - received);
+      } else {
+        delay(1);
+      }
+      client.loop();
+      terrasSmartOtaServiceStatusLed();
+    }
+    if (received != wanted || Update.write(buffer, received) != received) {
+      success = false;
+      break;
+    }
+    crcState = crc32Update(crcState, buffer, received);
+    remaining -= received;
+    client.loop();
+  }
+  http.end();
+  if (!success || remaining || (crcState ^ 0xFFFFFFFFUL) != expectedCrc ||
+      !Update.end()) {
+    TERRASMART_OTA_ABORT();
+    Serial.println("OTA Wemos update failed or CRC mismatch");
+    return false;
+  }
+  Serial.println("OTA Wemos MQTT gateway update complete; restarting");
+  delay(250);
+  ESP.restart();
+  return true;
+#elif defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+  const uint32_t maxImageSize =
+      1200000UL;
+  if (size == 0 || size > maxImageSize) return false;
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
   HTTPClient http;
@@ -695,13 +788,19 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
   }
   http.end();
   if (!success || remaining || (crcState ^ 0xFFFFFFFFUL) != expectedCrc || !Update.end()) {
-    Update.abort();
+    TERRASMART_OTA_ABORT();
     return false;
   }
-  Serial.println("OTA target 0: complete; restarting");
+  Serial.println("OTA MQTT gateway update complete; restarting");
   delay(250);
   ESP.restart();
   return true;
+#else
+  (void)url;
+  (void)size;
+  (void)expectedCrc;
+  return false;
+#endif
 }
 
 inline void loopMqtt() {}

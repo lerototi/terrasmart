@@ -409,7 +409,151 @@ roteadores fixos/sempre ligados e sem deep sleep.
 Cada fase deve gerar uma alteração pequena, um firmware compilável e um teste
 reproduzível antes de iniciar a fase seguinte. Não ativar simultaneamente
 descoberta, roteamento mesh e alteração de payload MQTT: testar cada camada
-separadamente facilita isolar falhas.
+separadamente facilita isolar falhas. A subseção 13.1 organiza o trabalho como
+uma sequência de PRs para revisão e entrega incremental. A descoberta direta
+entre node e gateway é o objetivo inicial; mesh fica fora do caminho crítico da
+migração.
+
+### 13.1 Decomposição em pull requests
+
+As fases abaixo são marcos técnicos; não devem ser executadas todas em uma única
+PR. A sequência seguinte divide o trabalho em alterações revisáveis e testáveis.
+Cada PR deve ter escopo próprio, firmware/build reproduzível e critério de
+aceitação. Uma PR pode ajustar o plano após evidência de bancada, mas não deve
+acumular a etapa seguinte.
+
+#### PR 1 — baseline reproduzível e contrato de compatibilidade
+
+- Seguir [production-baseline.md](production-baseline.md) para registrar builds,
+  versões, topologia, payloads, tópicos, comandos, boards e resultados do teste
+  ponta a ponta.
+- Manter evidências de compilação separadas das evidências de bancada; build
+  aprovado não comprova comunicação física.
+- Não alterar o protocolo nem os firmwares instalados.
+
+**Aceitação:** todos os ambientes de produção compilam ou têm falhas conhecidas
+documentadas; o caminho sensor → ESP-NOW → UART → MQTT é registrado em bancada;
+os contratos legados conhecidos estão documentados e nenhum segredo foi incluído.
+
+**Contrato de comando após PR 8:** mensagens FDRS de controle usam o tópico
+individual `terrasmart/gateways/<MAC>/command`, visível no portal/status. O tópico
+legado `terrasmart/command` é aceito temporariamente para compatibilidade; ele é
+compartilhado e pode atingir qualquer gateway que ainda o assine. Migre os
+produtores de comando para os tópicos individuais antes de retirar essa
+assinatura legada.
+
+#### PR 2 — eliminar colisões entre gateways MQTT
+
+- Derivar um client ID MQTT único e estável da identidade de fábrica de cada
+  gateway MQTT.
+- Publicar o status em um tópico próprio por gateway, preservando o tópico de
+  dados e seu payload atuais.
+- Configurar Last Will por gateway e limpar o status retido legado no primeiro
+  contato da versão nova com o broker.
+- Validar dois gateways MQTT conectados simultaneamente ao mesmo broker.
+
+**Aceitação:** os gateways permanecem conectados ao broker ao mesmo tempo, cada
+um mantém seu status independente e o consumidor atual de dados continua
+recebendo o formato legado; a queda de cada gateway atualiza somente seu próprio
+Last Will/status.
+
+#### PR 3 — definir identidade automática e envelope versionado
+
+- Especificar a identidade estável derivada da MAC de fábrica, separada dos IDs
+  semânticos de sensores e das credenciais de segurança.
+- Definir o envelope ESP-NOW e os campos de origem, gateway, sequência, versão e
+  limite de tamanho.
+- Definir o payload MQTT versionado para o broker compartilhado. O tópico de
+  dados pode continuar comum, mas cada mensagem nova deve identificar `node_id`
+  e `gateway_id`; o status permanece por gateway.
+- Definir como comandos e atualizações OTA identificam o gateway/dispositivo
+  alvo, para que gateways no mesmo broker não executem comandos alheios.
+- Nesta PR, registrar contratos e exemplos; não ativar o novo formato em
+  produção.
+
+**Aceitação:** formatos, transição legado/novo, IDs e roteamento de comandos
+estão especificados antes de alterar o tráfego dos dispositivos.
+
+#### PR 4 — prova isolada de identidade e descoberta no rádio
+
+- Criar ou estender firmware de diagnóstico para dois gateways ESP32 com
+  identidade estável derivada da MAC de fábrica e anúncios versionados.
+- Verificar recepção nos modelos de node em uso, canal e limites de peers.
+- Medir o que os cores realmente oferecem para a qualidade de enlace; não
+  assumir RSSI quando a API não o fornece.
+- Manter os ambientes de produção intocados.
+
+**Aceitação:** dois gateways são distinguidos após reinicializações e a
+compatibilidade de rádio está demonstrada nos hardwares de produção.
+
+#### PR 5 — descoberta experimental, sem persistência
+
+- Implementar descoberta e resposta unicast em um ambiente de build
+  experimental, inicialmente sem substituir o caminho fixo de produção.
+- O node coleta candidatos, ignora versões/redes incompatíveis e seleciona um
+  gateway usando a métrica de enlace validada na PR 4.
+- Ainda não encaminhar leituras de produção nem gravar a associação em flash.
+
+**Aceitação:** com dois gateways visíveis, o node seleciona e confirma um deles
+repetidamente sem alternância instável; o firmware legado continua disponível.
+
+#### PR 6 — associação persistente e recuperação direta
+
+- Persistir a última associação confirmada em formato versionado e validado.
+- Testar arranque em ordens diferentes, perda do gateway e redescoberta de outro
+  gateway compatível.
+- Limitar tentativas e escritas em flash; manter fallback para descoberta.
+
+**Aceitação:** reinicialização ou perda do gateway não exige reconfiguração
+manual e uma associação inválida não impede nova descoberta.
+
+#### PR 7 — piloto do protocolo novo em um node
+
+- Integrar o envelope em um node e no gateway ESP-NOW de teste, incluindo
+  identidade da origem e sequência.
+- Adaptar a UART em modo versionado e validar um gateway MQTT conectado ao mesmo
+  broker usado pelos demais.
+- Manter o formato MQTT legado para os dispositivos ainda não migrados; não
+  alterar todos os nodes nesta PR.
+
+**Aceitação:** um node atualizado entrega leituras identificadas ponta a ponta,
+sem quebrar nodes legados ou automações que consomem o tópico antigo.
+
+#### PR 8 — integração multi-gateway no broker compartilhado
+
+- Validar pelo menos dois pares ESP-NOW/MQTT, cada par com sua própria UART e
+  gateway MQTT conectado ao mesmo broker.
+- Publicar dados no espaço comum acordado e incluir `node_id` e `gateway_id` no
+  payload novo; status fica isolado por gateway.
+- Direcionar comandos/OTA ao par e dispositivo corretos, com testes de que os
+  outros gateways os ignoram.
+- Usar tópicos de comando FDRS por gateway e exigir `gateway_id` nos comandos
+  OTA globais; mostrar identidade e tópico de comando no portal de cada gateway.
+- Definir deduplicação no consumidor se o mesmo node puder ser ouvido por mais
+  de um gateway durante uma transição.
+
+**Aceitação:** não há colisões de client ID/status, comandos executados pelo par
+errado ou ambiguidade de origem no broker.
+
+#### PR 9 — migração de produção e remoção do endereço fixo
+
+- Preparar sequência de atualização, identificação de versões e rollback dos
+  firmwares de gateways e nodes.
+- Migrar por grupos após o piloto; confirmar recepção no Home Assistant, comandos
+  e OTA antes de avançar cada grupo.
+- Remover `GTWY_MAC`/endereçamento fixo somente depois de todos os dispositivos
+  relevantes usarem e validarem o protocolo novo.
+
+**Aceitação:** a frota migrada usa descoberta e IDs automáticos, com procedimento
+documentado de recuperação para cada etapa.
+
+#### Fora do escopo desta sequência — roteamento mesh
+
+Repetidores, múltiplos saltos, propagação de rotas e recuperação de mesh não são
+necessários para selecionar entre gateways diretamente alcançáveis. Permanecem
+como uma iniciativa posterior, com proposta e testes próprios, após estabilizar
+descoberta direta, identidade e integração MQTT multi-gateway. Não bloquear a
+migração direta esperando implementação de mesh.
 
 ### Fase 0 — bancada, versões e baseline
 
@@ -758,27 +902,30 @@ afetados e os testes de regressão do fluxo sensor → Home Assistant.
 
 - gateways que participam da rede ESP-NOW usam ESP32;
 - gateway MQTT separado usa Wemos D1 mini/ESP8266;
+- cada gateway ESP-NOW tem seu próprio gateway MQTT, ligado por UART; todos os
+  gateways MQTT conectam-se ao mesmo broker;
 - sensores/nodes folha usam Wemos D1 mini/ESP8266;
 - roteadores do MVP usam ESP32 dedicado, alimentado continuamente;
 - todos os rádios usam canal 1 durante o MVP;
 - seleção entre gateways diretamente visíveis busca o sinal mais forte, com
   filtragem e histerese;
-- primeiro validar um salto antes de habilitar múltiplos saltos.
+- validar descoberta direta antes de considerar múltiplos saltos; mesh é uma
+  iniciativa posterior e não requisito para a primeira migração.
 
 ### Decisões a fechar antes das fases correspondentes
 
 1. Qual identidade global de node e gateway será usada e como será provisionada?
 2. Como será autenticada a entrada de um dispositivo novo e como serão
    armazenadas/rotacionadas as chaves?
-3. Um ou vários gateways ESP-NOW podem convergir para o mesmo gateway MQTT, e
-   como evitar duplicação se ambos receberem a mesma mensagem?
-4. Qual formato MQTT versionado carregará node, sensor, gateway, sequência e
-   saltos sem quebrar automações existentes?
+3. Qual formato MQTT versionado carregará node, gateway, sensor e sequência,
+   preservando as automações existentes durante a migração?
+4. Como direcionar comandos e OTA ao par gateway correto quando todos assinam
+   tópicos no mesmo broker?
 5. Como obter RSSI/qualidade comparável no D1 mini ESP8266 e nos ESP32 com os
    cores selecionados?
-6. Quais RSSI, histerese, timeout e máximo de saltos são adequados após testes
-   no local?
-7. Qual é o comportamento de comandos se a rota de retorno desaparecer?
+6. Quais RSSI, histerese e timeout são adequados após testes no local?
+7. (Para uma fase futura de mesh) Qual máximo de saltos e comportamento de
+   comandos se a rota de retorno desaparecer?
 
 As recomendações deste documento são ponto de partida; números de intervalos,
 limiares e capacidade devem ser validados em hardware e no local de instalação.

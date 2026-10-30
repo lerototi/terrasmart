@@ -7,10 +7,9 @@ servidor HTTPS -> gateway MQTT ESP32 -> UART -> gateway ESP-NOW ESP32
                                       -> broadcast ESP-NOW -> nó selecionado
 ```
 
-O gateway MQTT ESP32 também pode atualizar a si próprio. A implantação no
-gateway MQTT ESP8266 continua usando ArduinoOTA na rede local; encaminhamento de
-imagens dele para a UART ainda não é suportado, pois nessa placa a UART ligada
-ao gateway ESP-NOW é a mesma interface usada para upload USB.
+Os gateways MQTT ESP32 e ESP8266 podem atualizar a si próprios por comando MQTT.
+O Wemos ESP8266 também mantém ArduinoOTA local. Ele não possui rádio ESP-NOW;
+targets do gateway ESP-NOW e nodes são encaminhados via UART ao ESP32 do par.
 
 O gateway MQTT ESP32 baixa a imagem e a envia ao gateway ESP-NOW pela UART. Para
 targets de nós, o gateway ESP-NOW transmite o início por broadcast para descobrir
@@ -43,9 +42,10 @@ transferência completa por rádio ainda precisa ser confirmada em bancada.
 ## IDs OTA
 
 O `target` é um identificador OTA de 8 bits, separado de `READING_ID`/`UNIT_MAC`.
-Os valores inicializados são gateway ESP-NOW `0x01`, nó sensor `0x11`, nó de
-boias `0x12` e nó de relés `0x14`. Se dois dispositivos iguais forem
-implantados, atribua IDs exclusivos em suas configurações de build/firmware.
+Os valores inicializados são gateway MQTT `0x00`, gateway ESP-NOW `0x01`, nó
+sensor `0x11`, nó de boias `0x12` e nó de relés `0x14`. Se dois dispositivos
+iguais forem implantados no mesmo par, atribua IDs exclusivos em suas
+configurações de build/firmware.
 
 O ID OTA é lógico e não está associado previamente a um MAC. Por isso, `Begin` é
 enviado por broadcast; somente o nó correspondente ao target responde. O gateway
@@ -60,10 +60,13 @@ USB antes de usar OTA.
 
 ## Comando MQTT
 
-Publique um JSON não retido em `terrasmart/ota`:
+Publique um JSON não retido no tópico OTA global `terrasmart/ota` ou envie um
+comando FDRS de controle no tópico privado daquele gateway mostrado no portal.
+Exemplo de atualização OTA:
 
 ```json
 {
+  "gateway_id": "gw-246F2801ABCD",
   "target": 17,
   "url": "https://firmware.exemplo.net/terrasmart/d1_mini_node.bin",
   "size": 304651,
@@ -71,11 +74,37 @@ Publique um JSON não retido em `terrasmart/ota`:
 }
 ```
 
+`gateway_id` escolhe qual par MQTT executará o comando. Use o ID exibido no
+portal/status, por exemplo `gw-246F2801ABCD`. Todos os gateways do mesmo broker
+recebem o tópico global, mas ignoram atualizações destinadas a outro gateway.
+Configure `ota_gateway_id` em `ota_config.json` ou informe `--gateway-id gw-...`
+ao executar o script de release.
+
+Para comandos de controle FDRS, cada portal também informa o tópico privado do
+par, no formato `terrasmart/gateways/<MAC>/command`. Publique nesse tópico para
+atingir somente os nodes conectados a esse gateway. O firmware runtime também
+aceita temporariamente `terrasmart/command` para compatibilidade com instalações
+existentes; esse tópico compartilhado não identifica o par e pode alcançar todos
+os gateways que ainda o assinam.
+
+Para atualizar o próprio gateway MQTT use `target: 0`. Para atualizar o gateway
+ESP-NOW use `target: 1`; para nodes, use os targets documentados acima. No par
+com Wemos, alvos 1/17/18/20 são encaminhados via UART ao ESP32 ESP-NOW, enquanto
+target 0 atualiza o Wemos localmente. As tarefas e `scripts/ota_release.py`
+sempre exigem o `gateway_id` do par para montar o comando.
+
+No ESP8266 MQTT gateway, o OTA do próprio Wemos usa `Update` na partição OTA do
+ESP8266; o OTA encaminhado para ESP-NOW continua passando pela UART para o ESP32.
+O firmware Wemos não contém rádio ESP-NOW, portanto não processa `target: 1`
+como atualização local. O layout OTA do D1 mini Pro oferece slots menores que a
+partição ESP32; respeite o limite de imagem definido pelo firmware e a saída do
+script antes de publicar.
+
 `crc32` é o CRC-32 IEEE do arquivo binário, reportado como inteiro decimal. O
-gateway baixa o firmware, valida o tamanho e CRC, e só então envia Begin/Data/End.
-Cada bloco de até 180 bytes deve ser confirmado antes do próximo; há até cinco
-tentativas. O alvo reinicia depois da confirmação final. Para atualizar o
-gateway MQTT ESP32, use `target: 0`.
+gateway baixa o firmware, valida tamanho e CRC, e então atualiza a si próprio ou
+envia Begin/Data/End ao gateway ESP-NOW. Para OTA encaminhada, cada bloco de até
+180 bytes deve ser confirmado antes do próximo; há até cinco tentativas. O alvo
+reinicia depois da confirmação final.
 
 ### Preparar e publicar pelo VS Code
 
@@ -123,7 +152,9 @@ substituem os valores equivalentes de `ota_config.json`, permitindo executar o
 script sem criar esse arquivo local.
 
 Ambientes aceitos: `d1_mini_node`, `d1_mini_float_switch_node`,
-`d1_mini_relay_node`, `esp32dev_gateway` e `esp32dev_mqtt_gateway`. Para publicar,
+`d1_mini_relay_node`, `esp32dev_gateway`, `d1_mini_mqtt_gateway` e
+`esp32dev_mqtt_gateway`. Para preparar OTA de um gateway MQTT, configure
+`ota_gateway_id` em `ota_config.json` com o ID apresentado pelo gateway. Para publicar,
 instale `mosquitto_pub` e configure os dados do broker em `ota_config.json`.
 O script avisa e bloqueia a publicação do gateway ESP-NOW se o binário exceder
 `0x1E0000` bytes; para os demais alvos encaminhados, o limite é 700.000 bytes.

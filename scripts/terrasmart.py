@@ -1,5 +1,10 @@
 from pathlib import Path
 import re
+from fdrs_build_patches import (
+    patch_mqtt_callback,
+    patch_mqtt_command_subscription,
+    patch_mqtt_connect_identity,
+)
 
 
 Import("env")
@@ -372,10 +377,9 @@ def patch_runtime_gateway(*_args, **_kwargs) -> None:
     ):
         source = header.read_text()
         original = source
-        source = source.replace(
-            'if (client.connect("FDRS_GATEWAY", mqtt_user, mqtt_pass))',
-            'if (client.connect("FDRS_GATEWAY", mqtt_user, mqtt_pass, TOPIC_STATUS, 0, true, "{\\"event\\":\\"offline\\"}"))',
-        )
+        source = patch_mqtt_connect_identity(source)
+        source = patch_mqtt_command_subscription(source)
+        source = patch_mqtt_callback(source)
         if source != original:
             header.write_text(source)
 
@@ -399,26 +403,7 @@ def patch_runtime_gateway(*_args, **_kwargs) -> None:
         source = header.read_text()
         # Clear the retry source byte before each begin so a lost ACK cannot
         # carry into the next packet and cause a duplicate/stale ACK.
-        source = re.sub(
-            r"if \(strcmp\(topic, TERRASMART_OTA_TOPIC\) == 0\) \{\n"
-            r"\s*terrasSmartOtaHandleMqttCommand\(message, length\);\n"
-            r"\s*return;\n\s*\}\n",
-            "",
-            source,
-        )
-        callback = (
-            "void mqtt_callback(char *topic, byte *message, unsigned int length)\n{\n"
-            "    if (strcmp(topic, TERRASMART_OTA_TOPIC) == 0) {\n"
-            "        terrasSmartOtaHandleMqttCommand(message, length);\n"
-            "        return;\n"
-            "    }\n"
-        )
-        source = re.sub(
-            r"void mqtt_callback\(char \*topic, byte \*message, unsigned int length\)\n\{\n",
-            lambda _match: callback,
-            source,
-            count=1,
-        )
+        source = patch_mqtt_callback(source)
         header.write_text(source)
 
     for header in project_dir.glob(
@@ -585,50 +570,6 @@ def patch_fdrs_ota_transport(*_args, **_kwargs) -> None:
             "    return;\n"
             "  }\n"
             "  JsonDocument doc;",
-            source,
-            count=1,
-        )
-        if source != original:
-            header.write_text(source)
-
-    for header in project_dir.glob(
-        ".pio/libdeps/*/Farm-Data-Relay-System/src/fdrs_gateway_mqtt.h"
-    ):
-        source = header.read_text()
-        original = source
-        source = source.replace(
-            "            client.subscribe(TOPIC_COMMAND);",
-            "            client.subscribe(TOPIC_COMMAND);\n"
-            "            client.subscribe(TERRASMART_OTA_TOPIC);",
-            1,
-        )
-        source = re.sub(
-            r"(\s*client\.subscribe\(TERRASMART_OTA_TOPIC\);\n){2,}",
-            "\n            client.subscribe(TERRASMART_OTA_TOPIC);\n",
-            source,
-        )
-        source = re.sub(
-            r'\s*if \(strcmp\(topic, TERRASMART_OTA_TOPIC\) == 0\) \{\n'
-            r'\s*terrasSmartOtaHandleMqttCommand\(message, length\);\n'
-            r'\s*return;\n\s*\}\n',
-            "",
-            source,
-        )
-        source = source.replace(
-            "void mqtt_callback(char *topic, byte *message, unsigned int length)\n{\n",
-            "void mqtt_callback(char *topic, byte *message, unsigned int length)\n{\n"
-            "    if (strcmp(topic, TERRASMART_OTA_TOPIC) == 0) {\n"
-            "        terrasSmartOtaHandleMqttCommand(message, length);\n"
-            "        return;\n"
-            "    }\n",
-            1,
-        )
-        source = re.sub(
-            r"(void mqtt_callback\(char \*topic, byte \*message, unsigned int length\)\s*\{)(?!\s*if \(strcmp\(topic, TERRASMART_OTA_TOPIC\) == 0\))",
-            r"\1\n    if (strcmp(topic, TERRASMART_OTA_TOPIC) == 0) {\n"
-            "        terrasSmartOtaHandleMqttCommand(message, length);\n"
-            "        return;\n"
-            "    }\n",
             source,
             count=1,
         )

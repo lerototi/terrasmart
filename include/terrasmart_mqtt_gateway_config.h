@@ -1,6 +1,6 @@
 #pragma once
 #include "terrasmart_ota_config.h"
-#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+#if defined(ESP32_MQTT_GATEWAY_FIRMWARE) || defined(ESP8266)
 #ifndef TERRASMART_OTA_MQTT
 #define TERRASMART_OTA_MQTT
 #endif
@@ -34,7 +34,9 @@
 #define LORA_NEIGHBOR_2 0x00
 
 #define USE_WIFI
+#if !defined(ESP8266) || !defined(FDRS_MQTT_GATEWAY_FIRMWARE)
 #define FDRS_DEBUG
+#endif
 #define DBG_LEVEL 2
 
 // On ESP32, these pins connect a dedicated UART to the ESP-NOW gateway and
@@ -46,6 +48,8 @@
 #define TOPIC_DATA "terrasmart/data"
 #define TOPIC_STATUS "terrasmart/status"
 #define TOPIC_COMMAND "terrasmart/command"
+#define TERRASMART_GATEWAY_COMMAND_TOPIC "terrasmart/gateways/+/command"
+#define TERRASMART_GATEWAY_DATA_TOPIC "terrasmart/data"
 
 // UART JSON from the ESP-NOW gateway goes to MQTT.
 #define SERIAL_ACT sendMQTT();

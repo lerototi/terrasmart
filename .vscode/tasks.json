@@ -28,7 +28,9 @@
       "args": [
         "${workspaceFolder}/scripts/ota_release.py",
         "--env",
-        "${input:otaEnvironment}"
+        "${input:otaEnvironment}",
+        "--gateway-id",
+        "${input:otaGatewayId}"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -43,6 +45,8 @@
         "${workspaceFolder}/scripts/ota_release.py",
         "--env",
         "${input:otaEnvironment}",
+        "--gateway-id",
+        "${input:otaGatewayId}",
         "--publish"
       ],
       "options": {
@@ -52,6 +56,12 @@
     }
   ],
   "inputs": [
+    {
+      "id": "otaGatewayId",
+      "type": "promptString",
+      "description": "gateway_id do par MQTT que deve executar OTA (gw-<MAC>)",
+      "default": "gw-246F2801ABCD"
+    },
     {
       "id": "homeAssistantWwwDir",
       "type": "promptString",
@@ -73,6 +83,7 @@
         "d1_mini_float_switch_node",
         "d1_mini_relay_node",
         "esp32dev_gateway",
+        "d1_mini_mqtt_gateway",
         "esp32dev_mqtt_gateway"
       ],
       "default": "d1_mini_node"
