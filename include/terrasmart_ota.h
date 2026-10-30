@@ -679,12 +679,6 @@ inline bool handleMqttCommand(JsonDocument &doc) {
     return result;
 #endif
   }
-#if defined(ESP8266)
-  if (target == TERRASMART_OTA_ESPNOW_TARGET_ID) {
-    Serial.println("OTA ESP-NOW gateway target rejected: D1 mini MQTT firmware has no ESP-NOW radio");
-    return false;
-  }
-#endif
   updateInProgress = true;
   const bool result = performUpdate(target, url, size, crc);
   updateInProgress = false;
