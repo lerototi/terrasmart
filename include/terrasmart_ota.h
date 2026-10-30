@@ -708,6 +708,7 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
 
   WiFiClient *stream = http.getStreamPtr();
   uint8_t buffer[512];
+  uint8_t finalByte = 0;
   uint32_t remaining = size;
   uint32_t crcState = 0xFFFFFFFFUL;
   bool success = true;
@@ -724,18 +725,25 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
       client.loop();
       terrasSmartOtaServiceStatusLed();
     }
-    if (received != wanted || Update.write(buffer, received) != received) {
+    const bool finalChunk = remaining == wanted;
+    const size_t bytesToWrite = wanted - (finalChunk ? 1 : 0);
+    if (received != wanted ||
+        (bytesToWrite && Update.write(buffer, bytesToWrite) != bytesToWrite)) {
       success = false;
       break;
     }
+    if (finalChunk) finalByte = buffer[wanted - 1];
     crcState = crc32Update(crcState, buffer, received);
     remaining -= received;
     client.loop();
   }
+  const bool crcMatches = (crcState ^ 0xFFFFFFFFUL) == expectedCrc;
+  if (success && !remaining && crcMatches && Update.write(&finalByte, 1) != 1) {
+    success = false;
+  }
   http.end();
-  if (!success || remaining || (crcState ^ 0xFFFFFFFFUL) != expectedCrc ||
-      !Update.end()) {
-    TERRASMART_OTA_ABORT();
+  if (!success || remaining || !crcMatches || !Update.end()) {
+    Update.end(false);
     Serial.println("OTA Wemos update failed or CRC mismatch");
     return false;
   }
