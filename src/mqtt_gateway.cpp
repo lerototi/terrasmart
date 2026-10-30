@@ -161,40 +161,37 @@ void buildApIdentity() {
   fdrs_runtime_ap_password = AP_PASSWORD;
 }
 
-void saveConfiguration(bool configured) {
+bool saveConfiguration(bool configured) {
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
-  preferences.putBool("configured", configured);
-  preferences.putString("wifi_ssid", wifiSsid);
-  preferences.putString("wifi_pass", wifiPassword);
-  preferences.putString("mqtt_host", mqttHost);
-  preferences.putUShort("mqtt_port", mqttPort);
-  preferences.putString("mqtt_user", mqttUser);
-  preferences.putString("mqtt_pass", mqttPassword);
+  const bool saved =
+      preferences.putBool("configured", configured) > 0 &&
+      preferences.putString("wifi_ssid", wifiSsid) > 0 &&
+      preferences.putString("wifi_pass", wifiPassword) > 0 &&
+      preferences.putString("mqtt_host", mqttHost) > 0 &&
+      preferences.putUShort("mqtt_port", mqttPort) > 0 &&
+      preferences.putString("mqtt_user", mqttUser) > 0 &&
+      preferences.putString("mqtt_pass", mqttPassword) > 0;
+  if (!saved) return false;
 #elif defined(ESP8266)
-  if (!configured) {
-    wifiSsid = "";
-    wifiPassword = "";
-  }
   PersistedConfig saved = {};
   saved.magic = EEPROM_CONFIG_MAGIC;
   saved.configured = configured ? 1 : 0;
   saved.mqttPort = mqttPort;
-  if (!copyField(saved.wifiSsid, sizeof(saved.wifiSsid), wifiSsid) ||
-      !copyField(saved.wifiPassword, sizeof(saved.wifiPassword), wifiPassword) ||
+  const String savedWifiSsid = configured ? wifiSsid : "";
+  const String savedWifiPassword = configured ? wifiPassword : "";
+  if (!copyField(saved.wifiSsid, sizeof(saved.wifiSsid), savedWifiSsid) ||
+      !copyField(saved.wifiPassword, sizeof(saved.wifiPassword),
+                 savedWifiPassword) ||
       !copyField(saved.mqttHost, sizeof(saved.mqttHost), mqttHost) ||
       !copyField(saved.mqttUser, sizeof(saved.mqttUser), mqttUser) ||
-      !copyField(saved.mqttPassword, sizeof(saved.mqttPassword), mqttPassword)) {
-    runtimeConfigured = false;
-    return;
-  }
+      !copyField(saved.mqttPassword, sizeof(saved.mqttPassword), mqttPassword))
+    return false;
   saved.checksum = configChecksum(saved);
   EEPROM.put(0, saved);
-  if (!EEPROM.commit()) {
-    runtimeConfigured = false;
-    return;
-  }
+  if (!EEPROM.commit()) return false;
 #endif
   runtimeConfigured = configured;
+  return true;
 }
 
 void loadConfiguration() {
@@ -455,13 +452,53 @@ void handleSave() {
     server.send(400, "text/plain", "Porta MQTT invalida.");
     return;
   }
-  wifiSsid = server.arg("wifi_ssid");
-  wifiPassword = server.arg("wifi_pass");
-  mqttHost = server.arg("mqtt_host");
+  const String requestedWifiSsid = server.arg("wifi_ssid");
+  const String requestedWifiPassword = server.arg("wifi_pass");
+  const String requestedMqttHost = server.arg("mqtt_host");
+  const String requestedMqttUser = server.arg("mqtt_user");
+  const String requestedMqttPassword = server.arg("mqtt_pass");
+#if defined(ESP8266)
+  PersistedConfig validation = {};
+  const bool fieldsFit =
+      copyField(validation.wifiSsid, sizeof(validation.wifiSsid),
+                requestedWifiSsid) &&
+      copyField(validation.wifiPassword, sizeof(validation.wifiPassword),
+                requestedWifiPassword) &&
+      copyField(validation.mqttHost, sizeof(validation.mqttHost),
+                requestedMqttHost) &&
+      copyField(validation.mqttUser, sizeof(validation.mqttUser),
+                requestedMqttUser) &&
+      copyField(validation.mqttPassword, sizeof(validation.mqttPassword),
+                requestedMqttPassword);
+  if (!fieldsFit) {
+    server.send(400, "text/plain", "Um ou mais campos excedem o limite permitido.");
+    return;
+  }
+#endif
+  const String previousWifiSsid = wifiSsid;
+  const String previousWifiPassword = wifiPassword;
+  const String previousMqttHost = mqttHost;
+  const String previousMqttUser = mqttUser;
+  const String previousMqttPassword = mqttPassword;
+  const uint16_t previousMqttPort = mqttPort;
+  const bool previousRuntimeConfigured = runtimeConfigured;
+  wifiSsid = requestedWifiSsid;
+  wifiPassword = requestedWifiPassword;
+  mqttHost = requestedMqttHost;
   mqttPort = static_cast<uint16_t>(requestedPort);
-  mqttUser = server.arg("mqtt_user");
-  mqttPassword = server.arg("mqtt_pass");
-  saveConfiguration(true);
+  mqttUser = requestedMqttUser;
+  mqttPassword = requestedMqttPassword;
+  if (!saveConfiguration(true)) {
+    wifiSsid = previousWifiSsid;
+    wifiPassword = previousWifiPassword;
+    mqttHost = previousMqttHost;
+    mqttPort = previousMqttPort;
+    mqttUser = previousMqttUser;
+    mqttPassword = previousMqttPassword;
+    runtimeConfigured = previousRuntimeConfigured;
+    server.send(500, "text/plain", "Falha ao salvar a configuracao.");
+    return;
+  }
   server.send(200, "text/html", "<p>Configuracao salva. O AP continua ativo enquanto o gateway tenta conectar ao Wi-Fi.</p><p><a href='/'>Voltar</a></p>");
   reconfigureNetwork();
 }

@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -51,6 +52,37 @@ class MqttConnectPatchTests(unittest.TestCase):
         source = script.read_text(encoding="utf-8")
         self.assertIn('config.get("ota_gateway_id")', source)
         self.assertIn('command["gateway_id"] = gateway_id', source)
+
+    def test_gateway_ota_task_passes_gateway_identity_without_config(self):
+        project_dir = Path(__file__).resolve().parents[1]
+        tasks = json.loads(
+            (project_dir / ".vscode" / "tasks.json").read_text(encoding="utf-8")
+        )
+        gateway_task = tasks["tasks"][0]
+        args = gateway_task["args"]
+        gateway_id_index = args.index("--gateway-id")
+
+        self.assertEqual(args[gateway_id_index + 1], "${input:otaGatewayId}")
+        docs = (project_dir / "docs" / "ota.md").read_text(encoding="utf-8")
+        self.assertIn("--gateway-id gw-246F2801ABCD", docs)
+
+    def test_runtime_config_save_checks_before_reporting_success(self):
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "mqtt_gateway.cpp"
+        ).read_text(encoding="utf-8")
+        handler = source[
+            source.index("void handleSave()") : source.index("void handleReset()")
+        ]
+
+        self.assertLess(
+            handler.index("copyField(validation"),
+            handler.index("wifiSsid = requestedWifiSsid"),
+        )
+        self.assertIn("if (!saveConfiguration(true))", handler)
+        self.assertLess(
+            handler.index('server.send(500, "text/plain", "Falha ao salvar'),
+            handler.index('server.send(200, "text/html"'),
+        )
 
     def test_gateway_command_subscription_uses_individual_topic_only_at_runtime(self):
         source = '''void reconnect_mqtt(short int attempts, bool silent)

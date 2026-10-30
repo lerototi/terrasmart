@@ -9,6 +9,8 @@
         "${workspaceFolder}/scripts/ota_release.py",
         "--env",
         "esp32dev_gateway",
+        "--gateway-id",
+        "${input:otaGatewayId}",
         "--www-dir",
         "${input:homeAssistantWwwDir}",
         "--base-url",

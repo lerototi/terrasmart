@@ -141,6 +141,7 @@ Também é possível executar pelo terminal:
 python3 scripts/ota_release.py --env d1_mini_node
 python3 scripts/ota_release.py --env d1_mini_node --publish
 python3 scripts/ota_release.py --env esp32dev_gateway \
+  --gateway-id gw-246F2801ABCD \
   --www-dir /caminho/montado/config/www \
   --base-url http://10.0.0.216 \
   --payload-file .pio/ota/esp32dev_gateway.json
