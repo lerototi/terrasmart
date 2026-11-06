@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <string.h>
+#include "terrasmart_discovery_packet.h"
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
@@ -13,11 +14,8 @@
 
 namespace {
 constexpr uint8_t CHANNEL = 1;
-constexpr uint16_t MAGIC = 0x5354;
-constexpr uint8_t VERSION = 1;
-constexpr uint8_t BEACON = 1;
-constexpr uint8_t PROBE = 2;
-constexpr uint8_t REPLY = 3;
+using namespace terras_smart_discovery;
+constexpr uint32_t NETWORK_ID = TERRASMART_DISCOVERY_NETWORK_ID;
 constexpr uint8_t MAX_CANDIDATES = 4;
 constexpr uint8_t QUEUE_SIZE = 16;
 constexpr uint32_t EXPIRY_MS = 6000;
@@ -26,15 +24,6 @@ constexpr uint32_t TIMEOUT_MS = 800;
 constexpr uint32_t REPORT_MS = 5000;
 constexpr uint8_t FAIL_LIMIT = 3;
 constexpr uint8_t CONFIRMATIONS = 3;
-
-struct __attribute__((packed)) Packet {
-  uint16_t magic;
-  uint8_t version;
-  uint8_t type;
-  uint8_t channel;
-  uint32_t sequence;
-};
-static_assert(sizeof(Packet) == 9, "Unexpected diagnostic packet size");
 
 struct Event { uint8_t mac[6]; Packet packet; };
 struct Candidate {
@@ -52,7 +41,7 @@ struct Candidate {
 
 Event queue[QUEUE_SIZE];
 volatile uint8_t head = 0, tail = 0;
-volatile uint32_t drops = 0, invalid = 0;
+volatile uint32_t drops = 0, invalid = 0, wrongNetwork = 0;
 #if defined(ESP32)
 portMUX_TYPE queueLock = portMUX_INITIALIZER_UNLOCKED;
 void lockQueue() { portENTER_CRITICAL(&queueLock); }
@@ -80,13 +69,14 @@ void printMac(const uint8_t *mac) {
 
 void receive(const uint8_t *mac, const uint8_t *data, int length) {
   Packet packet;
-  if (!mac || !data || length != sizeof(Packet)) {
+  if (!mac || (mac[0] & 1) || length < 0) {
     lockQueue(); ++invalid; unlockQueue(); return;
   }
-  memcpy(&packet, data, sizeof(packet));
-  if (packet.magic != MAGIC || packet.version != VERSION ||
-      packet.channel != CHANNEL || (packet.type != BEACON && packet.type != REPLY) ||
-      (mac[0] & 1)) {
+  const DecodeResult result = decode(data, static_cast<size_t>(length), CHANNEL, NETWORK_ID, packet);
+  if (result == DecodeResult::WRONG_NETWORK) {
+    lockQueue(); ++wrongNetwork; unlockQueue(); return;
+  }
+  if (result != DecodeResult::OK || (packet.type != BEACON && packet.type != REPLY)) {
     lockQueue(); ++invalid; unlockQueue(); return;
   }
   lockQueue();
@@ -114,7 +104,8 @@ bool addPeer(const uint8_t *mac) {
 }
 void removePeer(const uint8_t *mac) { esp_now_del_peer(mac); }
 bool sendPacket(const uint8_t *mac, const Packet &packet) {
-  return esp_now_send(mac, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet)) == ESP_OK;
+  uint8_t wire[WIRE_SIZE]; encode(packet, wire);
+  return esp_now_send(mac, wire, sizeof(wire)) == ESP_OK;
 }
 #else
 void onReceive(uint8_t *mac, uint8_t *data, uint8_t length) {
@@ -126,9 +117,8 @@ bool addPeer(const uint8_t *mac) {
 }
 void removePeer(const uint8_t *mac) { esp_now_del_peer(const_cast<uint8_t *>(mac)); }
 bool sendPacket(const uint8_t *mac, const Packet &packet) {
-  return esp_now_send(const_cast<uint8_t *>(mac),
-                      const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(&packet)),
-                      sizeof(packet)) == 0;
+  uint8_t wire[WIRE_SIZE]; encode(packet, wire);
+  return esp_now_send(const_cast<uint8_t *>(mac), wire, sizeof(wire)) == 0;
 }
 #endif
 
@@ -221,7 +211,7 @@ void serviceCandidates(uint32_t now) {
     uint8_t i = nextCandidate;
     nextCandidate = (nextCandidate + 1) % MAX_CANDIDATES;
     if (!candidates[i].used) continue;
-    Packet p = {MAGIC, VERSION, PROBE, CHANNEL, ++sequence};
+    Packet p = {PROBE, CHANNEL, NETWORK_ID, ++sequence};
     ++candidates[i].probes;
     pending = i;
     pendingSequence = p.sequence;
@@ -239,8 +229,9 @@ void serviceCandidates(uint32_t now) {
 void report() {
   Serial.print("Selected: ");
   if (selected < 0) Serial.print("none"); else printMac(candidates[selected].mac);
-  lockQueue(); uint32_t localDrops = drops, localInvalid = invalid; unlockQueue();
+  lockQueue(); uint32_t localDrops = drops, localInvalid = invalid, localWrongNetwork = wrongNetwork; unlockQueue();
   Serial.print(" | invalid="); Serial.print(localInvalid);
+  Serial.print(" wrong_network="); Serial.print(localWrongNetwork);
   Serial.print(" drops="); Serial.print(localDrops);
   Serial.print(" unmatched="); Serial.print(unmatched);
   Serial.print(" table_full="); Serial.print(tableFull);
@@ -266,7 +257,7 @@ void setup() {
   Serial.begin(115200);
 #endif
   delay(100);
-  Serial.println("\nTerraSmart experimental dynamic discovery v1");
+  Serial.println("\nTerraSmart experimental dynamic discovery v2");
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 #if defined(ESP8266)
@@ -283,6 +274,7 @@ void setup() {
   }
 #endif
   Serial.print("Node STA MAC: "); Serial.println(WiFi.macAddress());
+  Serial.print("Network ID: 0x"); Serial.println(NETWORK_ID, HEX);
   Serial.println("Channel 1; discovery ready (diagnostic protocol, no authentication)");
   ready = true;
 }
