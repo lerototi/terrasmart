@@ -28,6 +28,7 @@ constexpr uint32_t TIMEOUT_MS = 800;
 constexpr uint32_t REPORT_MS = 5000;
 constexpr uint8_t FAIL_LIMIT = 3;
 constexpr uint8_t CONFIRMATIONS = 3;
+constexpr uint8_t PREFERRED_PROBE_LIMIT = 3;
 
 struct Event { uint8_t mac[6]; Packet packet; };
 struct Candidate {
@@ -58,6 +59,7 @@ void unlockQueue() {}
 Candidate candidates[MAX_CANDIDATES] = {};
 int8_t selected = -1, pending = -1;
 uint8_t nextCandidate = 0;
+uint8_t preferredProbeAttempts = 0;
 uint32_t sequence = 0, pendingSequence = 0, pendingAt = 0;
 uint32_t nextProbe = 0, lastReport = 0, unmatched = 0, peerErrors = 0;
 uint32_t tableFull = 0;
@@ -290,9 +292,11 @@ void serviceCandidates(uint32_t now) {
   if (pending >= 0 || static_cast<int32_t>(now - nextProbe) < 0) return;
   if (preferredValid) {
     const int8_t preferred = findCandidate(preferredMac);
-    if (preferred >= 0 && candidates[preferred].successes < CONFIRMATIONS) {
+    if (preferred >= 0 && candidates[preferred].successes < CONFIRMATIONS &&
+        preferredProbeAttempts < PREFERRED_PROBE_LIMIT) {
       Packet p = {PROBE, CHANNEL, NETWORK_ID, ++sequence};
       ++candidates[preferred].probes;
+      ++preferredProbeAttempts;
       pending = preferred;
       pendingSequence = p.sequence;
       pendingAt = now;
