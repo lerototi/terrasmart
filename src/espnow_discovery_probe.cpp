@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <string.h>
+#include "terrasmart_discovery_packet.h"
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
@@ -57,11 +58,11 @@
 #endif
 
 namespace {
-constexpr uint16_t PACKET_MAGIC = 0x5354; // "TS" on wire, little-endian.
-constexpr uint8_t PACKET_VERSION = 1;
-constexpr uint8_t PACKET_BEACON = 0x01;
-constexpr uint8_t PACKET_PROBE = 0x02;
-constexpr uint8_t PACKET_REPLY = 0x03;
+using namespace terras_smart_discovery;
+constexpr uint8_t PACKET_BEACON = BEACON;
+constexpr uint8_t PACKET_PROBE = PROBE;
+constexpr uint8_t PACKET_REPLY = REPLY;
+constexpr uint32_t NETWORK_ID = TERRASMART_DISCOVERY_NETWORK_ID;
 constexpr uint32_t BEACON_INTERVAL_MS = 1000;
 constexpr uint32_t PROBE_INTERVAL_MS = 2000;
 constexpr uint32_t PROBE_TIMEOUT_MS = 1000;
@@ -85,21 +86,12 @@ constexpr uint32_t SERIAL_BAUD = 74880;
 constexpr uint32_t SERIAL_BAUD = 115200;
 #endif
 
-struct __attribute__((packed)) DiscoveryPacket {
-  uint16_t magic;
-  uint8_t version;
-  uint8_t type;
-  uint8_t channel;
-  uint32_t sequence;
-};
+using DiscoveryPacket = Packet;
 
 struct PendingReply {
   uint8_t mac[6];
   uint32_t sequence;
 };
-
-static_assert(sizeof(DiscoveryPacket) == 9,
-              "DiscoveryPacket wire format must remain exactly 9 bytes");
 
 uint8_t factoryStaMac[6] = {};
 uint8_t activeStaMac[6] = {};
@@ -115,6 +107,7 @@ volatile uint32_t receiveCallbacks = 0;
 volatile uint32_t validProbes = 0;
 volatile uint32_t otherBeacons = 0;
 volatile uint32_t invalidPackets = 0;
+volatile uint32_t wrongNetworkPackets = 0;
 volatile uint32_t peerAddFailures = 0;
 volatile uint32_t sendQueueFailures = 0;
 volatile uint32_t beaconSendSuccesses = 0;
@@ -141,6 +134,7 @@ uint32_t probeSequence = 0;
 volatile uint32_t receiveCallbacks = 0;
 volatile uint32_t unmatchedReplies = 0;
 volatile uint32_t invalidPackets = 0;
+volatile uint32_t wrongNetworkPackets = 0;
 volatile uint32_t sendCallbacksSuccess = 0;
 volatile uint32_t sendCallbacksFailure = 0;
 volatile uint32_t probeQueueFailures = 0;
@@ -230,20 +224,8 @@ bool printActiveChannel() {
 }
 
 DiscoveryPacket makePacket(uint8_t type, uint32_t sequence) {
-  return {PACKET_MAGIC, PACKET_VERSION, type, RSSI_PROBE_CHANNEL, sequence};
+  return {type, RSSI_PROBE_CHANNEL, NETWORK_ID, sequence};
 }
-
-#if defined(ESPNOW_DISCOVERY_GATEWAY_PROBE)
-bool isValidPacket(const uint8_t *data, int length, uint8_t expectedType) {
-  if (data == nullptr || length != static_cast<int>(sizeof(DiscoveryPacket))) {
-    return false;
-  }
-  DiscoveryPacket packet;
-  memcpy(&packet, data, sizeof(packet));
-  return packet.magic == PACKET_MAGIC && packet.version == PACKET_VERSION &&
-         packet.type == expectedType && packet.channel == RSSI_PROBE_CHANNEL;
-}
-#endif
 
 #if defined(ESPNOW_DISCOVERY_GATEWAY_PROBE)
 bool addBroadcastPeer() {
@@ -289,17 +271,26 @@ void onDataReceived(const uint8_t *mac, const uint8_t *data, int length) {
     ++invalidPackets;
     return;
   }
-  if (isValidPacket(data, length, PACKET_BEACON)) {
+  DiscoveryPacket probe;
+  const DecodeResult result = length < 0 ? DecodeResult::INVALID :
+      decode(data, static_cast<size_t>(length), RSSI_PROBE_CHANNEL, NETWORK_ID, probe);
+  if (result == DecodeResult::WRONG_NETWORK) {
+    ++wrongNetworkPackets;
+    return;
+  }
+  if (result != DecodeResult::OK) {
+    ++invalidPackets;
+    return;
+  }
+  if (probe.type == PACKET_BEACON) {
     ++otherBeacons;
     return;
   }
-  if (!isValidPacket(data, length, PACKET_PROBE)) {
+  if (probe.type != PACKET_PROBE) {
     ++invalidPackets;
     return;
   }
 
-  DiscoveryPacket probe;
-  memcpy(&probe, data, sizeof(probe));
   ++validProbes;
   memcpy(lastNodeMac, mac, sizeof(lastNodeMac));
   lastNodeMacValid = true;
@@ -330,9 +321,9 @@ bool initializeEspNow() {
 
 void sendBeacon() {
   const DiscoveryPacket beacon = makePacket(PACKET_BEACON, ++beaconSequence);
-  if (esp_now_send(BROADCAST_MAC,
-                   reinterpret_cast<const uint8_t *>(&beacon),
-                   sizeof(beacon)) != ESP_OK) {
+  uint8_t wire[WIRE_SIZE];
+  encode(beacon, wire);
+  if (esp_now_send(BROADCAST_MAC, wire, sizeof(wire)) != ESP_OK) {
     ++sendQueueFailures;
   }
   nextBeaconAt = millis() + BEACON_INTERVAL_MS;
@@ -354,8 +345,9 @@ void processProbeReplies() {
       continue;
     }
     DiscoveryPacket reply = makePacket(PACKET_REPLY, pending.sequence);
-    if (esp_now_send(pending.mac, reinterpret_cast<const uint8_t *>(&reply),
-                     sizeof(reply)) != ESP_OK) {
+    uint8_t wire[WIRE_SIZE];
+    encode(reply, wire);
+    if (esp_now_send(pending.mac, wire, sizeof(wire)) != ESP_OK) {
       ++sendQueueFailures;
     }
   }
@@ -380,6 +372,8 @@ void printReport() {
   }
   Serial.print(" | invalid packets: ");
   Serial.print(invalidPackets);
+  Serial.print(" | wrong network: ");
+  Serial.print(wrongNetworkPackets);
   Serial.print(" | other gateway beacons: ");
   Serial.print(otherBeacons);
   Serial.print(" | peer add failures: ");
@@ -403,15 +397,17 @@ void onDataSent(uint8_t *mac, uint8_t status) {
 
 void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t length) {
   ++receiveCallbacks;
-  if (mac == nullptr || data == nullptr ||
-      length != sizeof(DiscoveryPacket)) {
+  if (mac == nullptr) {
     ++invalidPackets;
     return;
   }
   DiscoveryPacket packet;
-  memcpy(&packet, data, sizeof(packet));
-  if (packet.magic != PACKET_MAGIC || packet.version != PACKET_VERSION ||
-      packet.channel != RSSI_PROBE_CHANNEL) {
+  const DecodeResult result = decode(data, length, RSSI_PROBE_CHANNEL, NETWORK_ID, packet);
+  if (result == DecodeResult::WRONG_NETWORK) {
+    ++wrongNetworkPackets;
+    return;
+  }
+  if (result != DecodeResult::OK) {
     ++invalidPackets;
     return;
   }
@@ -473,6 +469,8 @@ void sendProbe() {
   nextCandidate = static_cast<uint8_t>((nextCandidate + 1) % 2);
   const uint32_t sequence = ++probeSequence;
   DiscoveryPacket probe = makePacket(PACKET_PROBE, sequence);
+  uint8_t wire[WIRE_SIZE];
+  encode(probe, wire);
   pendingProbeSequence = sequence;
   pendingProbeAt = millis();
   pendingCandidate = candidate;
@@ -480,7 +478,7 @@ void sendProbe() {
   probePending = true;
   const int result = esp_now_send(
       const_cast<uint8_t *>(CANDIDATE_MACS[candidate]),
-      reinterpret_cast<uint8_t *>(&probe), sizeof(probe));
+      wire, sizeof(wire));
   if (result != 0) {
     ++probeQueueFailures;
     probePending = false;
@@ -531,6 +529,8 @@ void printReport() {
   Serial.print(probeTimeouts);
   Serial.print(" | invalid packets: ");
   Serial.print(invalidPackets);
+  Serial.print(" | wrong network: ");
+  Serial.print(wrongNetworkPackets);
   Serial.print(" | receive callbacks: ");
   Serial.println(receiveCallbacks);
 }
@@ -541,7 +541,8 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   delay(100);
   Serial.println();
-  Serial.println("TerraSmart ESP-NOW discovery link probe v1");
+  Serial.println("TerraSmart ESP-NOW discovery link probe v2");
+  Serial.print("Network ID: 0x"); Serial.println(NETWORK_ID, HEX);
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();

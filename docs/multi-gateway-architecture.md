@@ -741,12 +741,30 @@ selecionado. Caso vários já estejam confirmados, desempata pelo endereço MAC;
 não troca enquanto o atual continua válido. A latência é apenas registrada:
 esta versão não escolhe o melhor sinal nem compara qualidade de enlace.
 
-O formato de 9 bytes é somente o protocolo do probe, não o envelope de dados
-`multi-gateway-protocol-v1.md`. Ele verifica magic, versão, tipo, canal e MAC,
-mas não tem `network_id`, identidade de fábrica no payload ou autenticação.
-Por isso anúncios compatíveis de outra instalação podem entrar na tabela; esta
-prova não deve ser integrada ao transporte de produção ou usada para autorizar
-dispositivos. A associação é somente em RAM. A fila de recepção tem capacidade
+O protocolo de descoberta experimental v2 é independente do envelope de dados
+`multi-gateway-protocol-v1.md`. Ele usa exatamente 13 bytes, codificados
+explicitamente em little-endian:
+
+| Offset | Tamanho | Campo |
+| ---: | ---: | --- |
+| 0 | 2 | magic ASCII `TS` |
+| 2 | 1 | versão `2` |
+| 3 | 1 | tipo: beacon `1`, probe `2`, reply `3` |
+| 4 | 1 | canal |
+| 5 | 4 | `network_id` |
+| 9 | 4 | sequência |
+
+Node e gateway rejeitam comprimento, magic, versão, tipo, canal ou rede
+incompatíveis; `wrong_network` conta os quadros de outra rede. O valor padrão
+de bancada é `0x54530101`, substituível em cada build por
+`-DTERRASMART_DISCOVERY_NETWORK_ID=<valor>`. Ele não é segredo nem prova de
+autorização. O formato v2 rejeita o antigo v1 de 9 bytes, que continua utilizado
+somente pelo probe independente `espnow_rssi_probe.cpp`; para testar descoberta,
+regravar node e gateways juntos. As evidências anteriores referem-se ao v1.
+O endereço de rádio é a MAC ativa do gateway e ainda não há identidade de fábrica
+no payload ou autenticação. Esta prova não deve ser integrada ao transporte de
+produção nem usada para autorizar dispositivos. A associação é somente em RAM.
+A fila de recepção tem capacidade
 efetiva de 15 eventos e a tabela tem quatro entradas; descartes e tabela cheia
 são contados. O callback copia eventos, e o loop faz a seleção e mantém peers.
 
@@ -757,6 +775,8 @@ pio run -e esp32dev_discovery_node_experimental
 pio run -e d1_mini_discovery_node_experimental
 pio run -e esp32dev_discovery_gateway_probe
 pio run -e esp32dev_discovery_gateway_probe_2
+pio run -e esp32dev_discovery_gateway_other_network
+pio test -c platformio-native.ini -e native -f test_discovery_packet
 ```
 
 Gravar os dois gateways em ESP32 distintos e o node experimental em uma terceira
@@ -767,6 +787,21 @@ religá-lo e verificar que não ocorre alternância enquanto o selecionado respo
 Os dois candidatos devem ter endereços ativos diferentes. Confirmar também
 reboot, beacons e respostas fora de ordem e falhas sustentadas antes de usar os
 resultados para implementar seleção em produção.
+
+**Bancada v2 com rede incompatível:** D1 mini `EC:FA:BC:D4:E7:33`
+(`ttyUSB3`) e gateway `...:01` (`ttyUSB0`) usaram rede `0x54530101`;
+gateway `...:02` (`ttyUSB2`) usou `0x54530102`. O node selecionou 01 e
+confirmou 30/30 sondagens, enquanto o contador `wrong_network` chegou a 29
+e 02 não entrou na tabela. Com o probe de endereços fixos, sondagens enviadas
+à rede incompatível não geraram respostas: sete timeouts para 02 versus oito
+respostas de oito sondagens para 01; o gateway incompatível contabilizou
+quadros de outra rede e zero sondagens válidas. A entrega dos quadros unicast
+foi observada apenas de forma agregada no contador do gateway, que também recebe
+beacons da rede diferente. Depois, com os dois gateways na mesma rede, o node
+confirmou 15/15 sondagens para cada um; ao colocar 01 em reset, selecionou 02
+e permaneceu nele após o retorno e confirmação de 01. Outros quadros inválidos
+foram observados e não tiveram origem identificada. Testes nativos cobrem layout,
+sequência, tamanho, magic, versão, tipo, canal e rede incompatível.
 
 **Bancada de 05/11/2026:** os ambientes de node ESP32 e ESP8266 compilaram. O
 ESP32 de MAC `38:3E:51:D3:E3:74` recebeu o node experimental, mas após mudança
