@@ -32,6 +32,7 @@ constexpr uint32_t BEACON_INTERVAL_MS = 1000;
 constexpr uint32_t REPORT_INTERVAL_MS = 5000;
 constexpr uint32_t ACTIVE_GATEWAY_TIMEOUT_MS = 3000;
 constexpr uint32_t MAX_INITIAL_BEACON_DELAY_MS = 1000;
+constexpr uint32_t RESTART_SEQUENCE_WINDOW = 16;
 constexpr size_t MAX_TRACKED_GATEWAYS = 8;
 constexpr uint8_t RX_QUEUE_SIZE = 16;
 constexpr uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff,
@@ -95,9 +96,15 @@ volatile uint32_t receiveCallbacks = 0;
 volatile uint32_t invalidPackets = 0;
 volatile uint32_t queueDrops = 0;
 uint32_t untrackedPackets = 0;
+#if defined(ESP32)
+portMUX_TYPE receiveQueueLock = portMUX_INITIALIZER_UNLOCKED;
+void lockReceiveQueue() { portENTER_CRITICAL(&receiveQueueLock); }
+void unlockReceiveQueue() { portEXIT_CRITICAL(&receiveQueueLock); }
+#else
+void lockReceiveQueue() {}
+void unlockReceiveQueue() {}
 #endif
-
-void compilerMemoryBarrier() { __asm__ __volatile__("" ::: "memory"); }
+#endif
 
 void printMac(const uint8_t *mac) {
   for (uint8_t i = 0; i < 6; ++i) {
@@ -317,10 +324,14 @@ void onDataReceived(uint8_t *mac, uint8_t *data, uint8_t length) {
 #elif defined(ESP32)
 void onDataReceived(const uint8_t *mac, const uint8_t *data, int length) {
 #endif
+  lockReceiveQueue();
   ++receiveCallbacks;
+  unlockReceiveQueue();
   if (mac == nullptr || data == nullptr ||
       length != static_cast<int>(sizeof(ProbePacket))) {
+    lockReceiveQueue();
     ++invalidPackets;
+    unlockReceiveQueue();
     return;
   }
 
@@ -329,31 +340,38 @@ void onDataReceived(const uint8_t *mac, const uint8_t *data, int length) {
   if (packet.magic != PROBE_MAGIC || packet.version != PROBE_VERSION ||
       packet.type != PROBE_TYPE_BEACON ||
       packet.channel != RSSI_PROBE_CHANNEL) {
+    lockReceiveQueue();
     ++invalidPackets;
+    unlockReceiveQueue();
     return;
   }
 
+  lockReceiveQueue();
   const uint8_t head = receiveHead;
   const uint8_t nextHead = static_cast<uint8_t>((head + 1) % RX_QUEUE_SIZE);
   if (nextHead == receiveTail) {
     ++queueDrops;
+    unlockReceiveQueue();
     return;
   }
   memcpy(receiveQueue[head].mac, mac, sizeof(receiveQueue[head].mac));
   receiveQueue[head].sequence = packet.sequence;
-  compilerMemoryBarrier();
   receiveHead = nextHead;
+  unlockReceiveQueue();
 }
 
 void processReceivedBeacons() {
   while (true) {
+    PendingBeacon beacon;
+    lockReceiveQueue();
     const uint8_t tail = receiveTail;
     if (tail == receiveHead) {
+      unlockReceiveQueue();
       break;
     }
-    compilerMemoryBarrier();
-    const PendingBeacon beacon = receiveQueue[tail];
+    beacon = receiveQueue[tail];
     receiveTail = static_cast<uint8_t>((tail + 1) % RX_QUEUE_SIZE);
+    unlockReceiveQueue();
 
     GatewayObservation *gateway = findOrAllocateGateway(beacon.mac);
     if (gateway == nullptr) {
@@ -379,6 +397,11 @@ void processReceivedBeacons() {
       gateway->lastSequence = beacon.sequence;
     } else if (sequenceDelta == 0) {
       ++gateway->duplicates;
+    } else if (beacon.sequence <= RESTART_SEQUENCE_WINDOW &&
+               gateway->lastSequence > RESTART_SEQUENCE_WINDOW) {
+      // A low sequence after a high one is treated as a sender reboot.
+      gateway->lastSequence = beacon.sequence;
+      ++gateway->forwardPackets;
     } else {
       ++gateway->outOfOrder;
     }
@@ -455,8 +478,8 @@ void loop() {
     return;
   }
 
-  const uint32_t now = millis();
 #if defined(ESPNOW_RSSI_BEACON) || defined(ESPNOW_RSSI_UNICAST_TEST)
+  const uint32_t now = millis();
   if (static_cast<int32_t>(now - nextBeaconAt) >= 0) {
     sendBeacon();
   }
@@ -476,10 +499,16 @@ void loop() {
   }
 #else
   processReceivedBeacons();
+  const uint32_t now = millis();
   if (now - lastReportAt >= REPORT_INTERVAL_MS) {
     lastReportAt = now;
     uint8_t activeGateways = 0;
     uint8_t observedGateways = 0;
+    lockReceiveQueue();
+    const uint32_t reportedInvalidPackets = invalidPackets;
+    const uint32_t reportedReceiveCallbacks = receiveCallbacks;
+    const uint32_t reportedQueueDrops = queueDrops;
+    unlockReceiveQueue();
     Serial.println("Observed gateways:");
     for (size_t i = 0; i < MAX_TRACKED_GATEWAYS; ++i) {
       if (!gateways[i].active) {
@@ -522,11 +551,11 @@ void loop() {
     Serial.print(" | observed gateways: ");
     Serial.print(observedGateways);
     Serial.print(" | invalid packets: ");
-    Serial.print(invalidPackets);
+    Serial.print(reportedInvalidPackets);
     Serial.print(" | receive callbacks: ");
-    Serial.print(receiveCallbacks);
+    Serial.print(reportedReceiveCallbacks);
     Serial.print(" | receive queue drops: ");
-    Serial.print(queueDrops);
+    Serial.print(reportedQueueDrops);
     Serial.print(" | untracked packets: ");
     Serial.println(untrackedPackets);
   }
