@@ -90,6 +90,11 @@ The MQTT data payload is a JSON array, for example:
 
 Subscribe to `terrasmart/data` in Home Assistant. Each MQTT gateway reports status independently to `terrasmart/gateways/<MAC>/status`, where `<MAC>` is its Wi-Fi MAC in uppercase hexadecimal without separators. Its MQTT client ID is `ts-<MAC>`, and the status payload includes `gateway_id` as `gw-<MAC>`. The setup portal displays the pair-specific FDRS command topic, `terrasmart/gateways/<MAC>/command`; use that topic to control only nodes behind that gateway. Runtime-config gateway firmware subscribes to its private command topic; older firmware may still use the legacy shared `terrasmart/command` topic.
 
+The planned versioned identity and ESP-NOW/MQTT data contracts are documented in
+[`docs/multi-gateway-protocol-v1.md`](docs/multi-gateway-protocol-v1.md). They are
+not enabled by the current firmware; production data remains on the legacy topic
+and payload above.
+
 The MQTT gateway publishes a retained JSON status message to its per-device status topic, for example `terrasmart/gateways/246F2801ABCD/status`:
 
 ```json

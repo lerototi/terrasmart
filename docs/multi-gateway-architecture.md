@@ -471,6 +471,13 @@ Last Will/status.
 - Nesta PR, registrar contratos e exemplos; não ativar o novo formato em
   produção.
 
+Contrato definido nesta etapa para orientar a implementação: [multi-gateway-protocol-v1.md](multi-gateway-protocol-v1.md).
+Ele distingue o `gateway_id` do front-end MQTT do `radio_gateway_id` do ESP32,
+mantém o tópico/payload legado e reserva `terrasmart/data/v1` para objetos
+versionados. Segurança criptográfica, provisionamento de `network_id` e alvo OTA
+individual por `node_id` continuam requisitos antes das respectivas fases de
+ativação.
+
 **Aceitação:** formatos, transição legado/novo, IDs e roteamento de comandos
 estão especificados antes de alterar o tráfego dos dispositivos.
 
@@ -609,29 +616,300 @@ pio run -e d1_mini_espnow_probe_receiver
 
 Procedimento de bancada:
 
-1. Gravar `esp32dev_espnow_probe_gateway_1` no primeiro ESP32 e
-   `esp32dev_espnow_probe_gateway_2` no segundo.
+1. Gravar `esp32dev_espnow_probe_gateway_1` em um ESP32 e
+   `esp32dev_espnow_probe_gateway_2` no outro. Os dois builds transmitem o mesmo
+   protocolo; a identidade do gateway é a MAC STA de fábrica lida do rádio, não
+   um ID constante de build.
 2. Gravar `d1_mini_espnow_probe_receiver` no Wemos D1 mini que será o node.
-3. Abrir monitores seriais a 115200 baud. Cada ESP32 deve exibir o ID do
-   anúncio, a sequência transmitida e o resultado do callback de envio.
-4. O Wemos deve exibir a quantidade de pacotes recebidos, ID/sequência e MAC de
-   origem. Repetir mudando distância, posição e obstruções, e guardar os logs.
+3. Abrir os monitores dos ESP32 a 115200 baud e o monitor do receptor D1 mini a
+   74880 baud. O ESP8266 do build de diagnóstico usa 74880 baud para que tanto
+   as mensagens de boot quanto os marcadores de estágio da aplicação sejam
+   legíveis. Cada ESP32 exibe a MAC STA de fábrica, canal, sequência transmitida
+   e resultados do callback de envio.
+4. O Wemos exibe uma entrada por MAC gateway observada, contagem de pacotes,
+   última sequência e idade da última recepção. O callback apenas valida/copia
+   para uma fila limitada; a atualização da tabela e impressão ocorrem no loop.
+   Repetir mudando distância, posição e obstruções, e guardar os logs.
 5. Repetir com cada transmissor individualmente e com os dois ativos.
 
-O callback ESP-NOW fornecido pelo core ESP8266 atualmente fixado recebe somente
-MAC, dados e comprimento; não inclui RSSI. O callback da versão ESP32 usada pelo
-projeto também não inclui RSSI. Por isso, o firmware de diagnóstico valida
-descoberta, recepção e identidade dos anúncios, mas reporta RSSI como indisponível.
-Não interpretar o status do callback de envio do transmissor como RSSI ou como
-confirmação de que o receptor processou o anúncio.
+O beacon de diagnóstico v1 tem 9 bytes: magic `TS`, versão, tipo, canal e
+sequência `uint32_t`; a MAC de origem fornecida pelo callback é sua identidade
+estável. O receptor valida tamanho, magic, versão, tipo e canal, e mantém até oito
+MACs observadas. Quadros recebidos além da capacidade da fila/tabela são contados
+como descartes, sem alocação dinâmica.
 
-O resultado desta primeira prova deve registrar separadamente se a camada de
+Nos cores efetivamente configurados (ESP8266 Arduino 3.1.2 e ESP32 Arduino
+2.0.17), a assinatura do callback ESP-NOW usado recebe MAC, dados e comprimento;
+não inclui RSSI. Por isso o firmware reporta RSSI como indisponível. Não
+interpretar o status do callback de envio do transmissor como RSSI ou como
+confirmação de que o receptor processou o anúncio. A prova de RSSI por sniffer ou
+interface promiscuous continua fora desta PR, conforme a restrição de não usar
+metadados privados/não documentados no firmware de produção.
+
+**Resultado de bancada relatado:** dois ESP32 transmissores foram recebidos
+simultaneamente pelo receptor de diagnóstico ESP32. Os logs mostraram os MACs
+`38:3E:51:D4:0E:80` e `38:3E:51:D3:E3:74`, 551 callbacks de recepção, zero
+pacotes inválidos, zero descartes de fila e zero pacotes sem rastreamento. Isso
+valida broadcast ESP-NOW ESP32→ESP32 para o probe; não valida a recepção pelo D1
+mini, RSSI, estabilidade após reboot, alcance ou o fluxo FDRS de produção.
+
+#### Diagnóstico seguinte — enlace de descoberta com node D1 mini
+
+Os probes de descoberta abaixo são experimentais e independentes do FDRS de
+produção. Eles reproduzem o endereço lógico atual do gateway (`AA:BB:CC:DD:EE:01`)
+e mantêm a MAC de fábrica do D1 mini como identidade/transmissor do node. O
+gateway ESP32 imprime a MAC STA de fábrica e a MAC ativa após aplicar o endereço
+FDRS; o node imprime sua MAC de fábrica e o MAC de destino configurado.
+
+Builds:
+
+```bash
+pio run -e esp32dev_discovery_gateway_probe
+pio run -e esp32dev_discovery_gateway_probe_2
+pio run -e d1_mini_discovery_node_probe
+pio run -e d1_mini_discovery_node_probe_2
+```
+
+Procedimento:
+
+1. Gravar `esp32dev_discovery_gateway_probe` no ESP32 e
+   `d1_mini_discovery_node_probe` no Wemos. Manter ambos no canal 1 e próximos
+   durante a primeira execução.
+2. Abrir o monitor ESP32 a 115200 baud e o monitor D1 mini a 74880 baud.
+   Confirmar no ESP32 `Active STA MAC: AA:BB:CC:DD:EE:01`; a MAC de fábrica deve
+   permanecer exibida separadamente. No node, confirmar a MAC de fábrica e o
+   mesmo canal.
+3. O gateway transmite beacon broadcast a cada segundo. O node conta beacons
+   recebidos e envia uma sondagem unicast a cada dois segundos para o endereço
+   ativo do gateway. O gateway responde com o mesmo número de sequência.
+4. Comparar no node `Beacons received`, callbacks de envio, `replies`, timeouts e
+   latência; no gateway comparar callbacks, sondagens válidas e falhas ao
+   cadastrar/enfileirar/responder ao MAC de origem recebido.
+5. Repetir com o gateway FDRS de produção e o node de produção somente após o
+   protocolo experimental validar a diferença entre endereço STA de fábrica e
+   endereço ESP-NOW ativo. Não operar os dois firmwares de gateway no mesmo canal
+   ao mesmo tempo durante a comparação.
+6. Para exercitar dois candidatos, gravar `esp32dev_discovery_gateway_probe`
+   no primeiro ESP32 e `esp32dev_discovery_gateway_probe_2` no segundo; use um
+   node com `d1_mini_discovery_node_probe`. Os endereços ativos serão
+   `AA:BB:CC:DD:EE:01` e `AA:BB:CC:DD:EE:02`. O node alterna sondagens unicast
+    entre os dois e reporta beacons, respostas e timeouts por MAC. Ambos os
+    ambientes do node sondam os dois candidatos; o sufixo `_2` apenas altera o
+    endereço de gateway mostrado na inicialização. Para um teste isolado,
+    mantenha ligado somente o gateway desejado e considere os timeouts do outro.
+
+Critério para iniciar a implementação de descoberta no node: beacons recebidos
+repetidamente e respostas de sondagem com sequência correspondente, sem timeout
+contínuo, com MAC/endereço ativo e canal registrados. O status do callback de
+envio sozinho não conta como confirmação da aplicação.
+
+**Bancada de 05/11/2026:** `ttyUSB2` (MAC de fábrica
+`D4:E9:F4:02:E5:EC`) operou como gateway de diagnóstico com endereço ativo
+`AA:BB:CC:DD:EE:01`, canal 1. Em um teste separado, `ttyUSB4` (MAC de fábrica
+`38:3E:51:D3:E3:74`) executou o receptor ESP32 e recebeu 15 beacons válidos
+desse gateway; o relatório registrou zero lacunas estimadas, duplicatas,
+pacotes inválidos e descartes de fila. É uma amostra curta de broadcast
+ESP32 → ESP32, sem prova de unicast ou do D1 mini. Ao final, `ttyUSB4` foi
+regravado como gateway de diagnóstico `AA:BB:CC:DD:EE:02`.
+
+O upload do probe para o D1 mini em `ttyUSB3` falhou duas vezes por timeout de
+conexão. Após reset pela serial, o ROM informou `boot mode:(7,7)` e `waiting
+for host`, portanto não houve execução do probe nem validação ESP8266 ↔ ESP32.
+Verificar conexões externas e níveis de boot do ESP8266 (GPIO15/D8 baixo;
+GPIO2/D4 alto; GPIO0/D3 alto para executar ou baixo para gravação), além de
+RX/TX e reset automático, antes de repetir o upload. A comunicação direta
+bidirecional com os dois gateways e o critério para avançar permanecem pendentes.
+
+O resultado de bancada deve registrar separadamente se a camada de
 recepção/monitor do rádio permite associar RSSI de forma confiável a cada
 anúncio ESP-NOW nas placas reais. Não adotar modo promiscuous, layout privado de
 metadados do SDK ou API não documentada no firmware de produção sem uma prova
 isolada de coexistência e estabilidade. Se RSSI não puder ser obtido de forma
 suportada no D1 mini, revisar a escolha de gateway para uma métrica de enlace
 baseada em ACKs/entrega ou rever a plataforma antes da fase de seleção.
+
+#### Descoberta dinâmica experimental
+
+`src/espnow_discovery_node.cpp` implementa uma prova isolada para ESP32 e
+ESP8266. O node descobre até quatro endereços de rádio a partir dos beacons do
+probe de gateway acima, cadastra peers, sonda cada candidato em rodízio e exige
+três respostas consecutivas com sequência correspondente antes de selecioná-lo.
+Mantém a seleção enquanto o candidato anuncia e responde; três falhas
+consecutivas ou seis segundos sem beacon invalidam a seleção. Candidatos
+expirados liberam o peer. Depois da perda, um candidato já confirmado pode ser
+selecionado. Caso vários já estejam confirmados, desempata pelo endereço MAC;
+não troca enquanto o atual continua válido. A latência é apenas registrada:
+esta versão não escolhe o melhor sinal nem compara qualidade de enlace.
+
+O formato de 9 bytes é somente o protocolo do probe, não o envelope de dados
+`multi-gateway-protocol-v1.md`. Ele verifica magic, versão, tipo, canal e MAC,
+mas não tem `network_id`, identidade de fábrica no payload ou autenticação.
+Por isso anúncios compatíveis de outra instalação podem entrar na tabela; esta
+prova não deve ser integrada ao transporte de produção ou usada para autorizar
+dispositivos. A associação é somente em RAM. A fila de recepção tem capacidade
+efetiva de 15 eventos e a tabela tem quatro entradas; descartes e tabela cheia
+são contados. O callback copia eventos, e o loop faz a seleção e mantém peers.
+
+Compilação e bancada:
+
+```bash
+pio run -e esp32dev_discovery_node_experimental
+pio run -e d1_mini_discovery_node_experimental
+pio run -e esp32dev_discovery_gateway_probe
+pio run -e esp32dev_discovery_gateway_probe_2
+```
+
+Gravar os dois gateways em ESP32 distintos e o node experimental em uma terceira
+placa; usar baud 115200 para ESP32 e 74880 para ESP8266. Observar `Candidate
+discovered`, os contadores de beacons e respostas e `Selection: ... confirmed`.
+Desligar o gateway selecionado e acompanhar expiração e troca para o outro;
+religá-lo e verificar que não ocorre alternância enquanto o selecionado responde.
+Os dois candidatos devem ter endereços ativos diferentes. Confirmar também
+reboot, beacons e respostas fora de ordem e falhas sustentadas antes de usar os
+resultados para implementar seleção em produção.
+
+**Bancada de 05/11/2026:** os ambientes de node ESP32 e ESP8266 compilaram. O
+ESP32 de MAC `38:3E:51:D3:E3:74` recebeu o node experimental, mas após mudança
+de porta/cabeamento reiniciou repetidamente com `Brownout detector was triggered`
+ao ligar o Wi-Fi. O gateway `D4:E9:F4:02:E5:EC` inicializou e anunciou no canal 1.
+Assim, não há ainda evidência de descoberta, unicast ou failover deste novo
+firmware. Verificar alimentação/cabo/hub do node e repetir com um terceiro
+dispositivo funcional para validar os dois gateways simultaneamente; o D1 mini
+também precisa passar pelo teste físico descrito acima.
+
+**Nova bancada com três ESP32:** os três firmwares foram gravados e executados
+no canal 1. A numeração abaixo é a observada durante este ensaio e pode mudar
+após reconexão USB:
+
+| Papel | Porta | MAC STA de fábrica | MAC de rádio ativa |
+| --- | --- | --- | --- |
+| Gateway 01 | `/dev/ttyUSB2` | `D4:E9:F4:02:E5:EC` | `AA:BB:CC:DD:EE:01` |
+| Gateway 02 | `/dev/ttyUSB0` | `38:3E:51:D3:E3:74` | `AA:BB:CC:DD:EE:02` |
+| Node experimental | `/dev/ttyUSB1` | `38:3E:51:D4:0E:80` | MAC de fábrica |
+
+O node identificou os dois candidatos e recebeu respostas unicast com a
+sequência esperada. Em um relatório da primeira execução, gateway 01 tinha 26
+sondagens e 26 respostas, e gateway 02 tinha 38 sondagens e 38 respostas; ambos
+tinham zero timeouts. O node reportou zero descartes de fila, respostas sem
+correspondência, tabela cheia e erros de peer/envio. Houve um pacote inválido
+no node, sem diagnóstico adicional de sua origem. Não inferir taxa de perda de
+broadcast apenas a partir dessas contagens.
+
+Com 02 selecionado, mantê-lo em reset por 20 segundos levou à expiração do
+candidato e à seleção de 01, previamente confirmado. Após liberar 02, o node o
+redescobriu e continuou selecionando 01 mesmo depois de três respostas válidas
+do 02. Repetido no sentido contrário, com 01 em reset por 18 segundos, o node
+passou a 02 e permaneceu nele após o retorno e confirmação de 01. Isto testa
+indisponibilidade de rádio por reset, não todas as causas de falha de enlace.
+
+O contador do gateway foi corrigido para distinguir beacons válidos de outro
+gateway de quadros inválidos; também foi adicionada exclusão mútua à fila de
+respostas entre o callback Wi-Fi e o loop do ESP32. Ambos os gateways foram
+regravados e continuaram respondendo às sondagens. A segunda execução de
+failover foi realizada após essa alteração. Outros quadros inválidos foram
+observados nos gateways, sem identificação da origem; não foram tratados como
+falhas de entrega das sondagens. Estes resultados validam somente a descoberta
+e a troca direta do protocolo de diagnóstico entre ESP32, sem RSSI, tráfego FDRS,
+MQTT, mesh, autenticação ou teste em ESP8266.
+
+**Bancada posterior com D1 mini ESP8266:** o node experimental já gravado em
+`/dev/ttyUSB3` iniciou com MAC STA `E8:DB:84:93:4F:E0`. Com o gateway ESP32 de
+MAC de fábrica `D4:E9:F4:02:E5:EC` no endereço ativo `AA:BB:CC:DD:EE:01`, o
+node registrou 215 sondagens e 215 respostas correspondentes, sem timeouts ou
+descartes no relatório observado. Depois de regravar esse mesmo ESP32 como
+gateway `AA:BB:CC:DD:EE:02`, o D1 mini também o descobriu e confirmou 20 de 20
+sondagens, sem timeouts. O teste comprova comunicação bidirecional direta com
+essa placa nos dois endereços, não com dois gateways simultaneamente.
+
+Com os gateways ativos simultaneamente, o D1 mini recebeu somente o gateway
+`D4:E9:F4:02:E5:EC`, mesmo com o outro gateway visível ao node ESP32. O mesmo
+ocorreu ao trocar os endereços ativos das placas, e ao colocar o gateway
+`D4:E9:F4:02:E5:EC` em reset: o D1 mini expirou a seleção, mas não recebeu
+anúncios do outro ESP32 durante a janela observada. Não foi identificada a causa;
+o usuário confirmou que as placas já estavam próximas, separadas e alimentadas
+por USB durante o teste. O caminho de rádio ainda precisa ser investigado.
+Não tratar essa observação como prova de incompatibilidade geral do ESP8266.
+Faltam recepção simultânea dos dois candidatos no D1 mini, respostas unicast de
+ambos e teste de failover antes de declarar esse cenário aprovado.
+
+**Isolamento adicional:** o receptor simples `d1_mini_espnow_probe_receiver`,
+sem tabela de peers no caminho de recepção, também observou somente o gateway
+02, enquanto o node ESP32 observou ambos. Com `d1_mini_discovery_node_probe`,
+que sonda os endereços fixos mesmo sem receber beacon, o ESP32 com MAC de
+fábrica `38:3E:51:D4:0E:80` recebeu sondagens da MAC do D1 e tentou responder,
+mas o D1 contabilizou 44 sondagens para ele e nenhuma resposta; para o outro
+gateway registrou 44 respostas de 44 sondagens. No gateway com falha, os
+callbacks de envio de resposta falharam enquanto o ESP32 de diagnóstico estava
+em reset, indicando que o problema não se limita à tabela de descoberta. Uma
+tentativa experimental de fixar a taxa ESP-NOW em 1 Mbps e reduzir a potência
+de transmissão nesse ESP32 não restabeleceu a recepção no D1. Não há evidência
+suficiente para concluir se a causa é hardware, configuração ou outra diferença
+na camada de rádio. Os testes temporários de taxa/potência foram removidos; o D1
+foi novamente gravado com o node experimental e os dois ESP32 ficaram com os
+gateways de diagnóstico 01 (`ttyUSB1`) e 02 (`ttyUSB2`).
+
+**Investigação adicional do enlace:** o problema foi reproduzido também com o
+ESP32 de MAC `38:3E:51:D3:E3:74` como gateway, usando o mesmo firmware e MAC
+ativa `AA:BB:CC:DD:EE:01`. O D1 continuou recebendo somente o gateway de MAC
+de fábrica `D4:E9:F4:02:E5:EC`; ao mantê-lo em reset, o node expirou sua
+seleção e não descobriu o outro gateway durante 26 segundos. Num ensaio isolado
+em canal 6, o D1 em monitor de rádio temporário não detectou quadros da placa
+`38:3E:51:D4:0E:80`, enquanto um monitor ESP32, no mesmo canal, detectou seus
+quadros. Esses monitores serviram apenas para diagnóstico; não foram incorporados
+ao firmware. Os testes com MAC de fábrica, taxa de 1 Mbps e potência reduzida
+não produziram recepção no D1. A causa raiz continua indeterminada: os resultados
+apontam para o caminho de rádio, mas não permitem distinguir defeito de placa,
+interferência ou incompatibilidade de configuração. Não houve correção validada;
+permanecem pendentes recepção bidirecional e failover do D1 com dois gateways.
+
+**Comparação com um segundo D1 mini:** gravou-se o mesmo ambiente
+`d1_mini_discovery_node_experimental` no novo D1, MAC de fábrica
+`EC:FA:BC:D4:E7:33`, conectado em `/dev/ttyUSB4`. Os dois D1 permaneceram
+ligados simultaneamente no canal 1, assim como os gateways de diagnóstico
+`AA:BB:CC:DD:EE:01` (`/dev/ttyUSB0`, MAC de fábrica
+`38:3E:51:D3:E3:74`) e `AA:BB:CC:DD:EE:02` (`/dev/ttyUSB2`, MAC de fábrica
+`D4:E9:F4:02:E5:EC`). As portas refletem somente esta sessão.
+
+O novo D1 identificou os dois gateways e confirmou sondagens unicast com ambos:
+em um relatório, 22 sondagens e 22 respostas por gateway, zero timeouts, quadros
+inválidos, descartes de fila, respostas não correspondentes e erros de peer ou
+envio. O D1 anterior, `E8:DB:84:93:4F:E0`, continuou observando somente o
+gateway 02. Os dois receivers tinham o mesmo firmware e usavam posições e
+conexões USB distintas; a comparação não determina qual diferença do enlace
+causou o resultado.
+
+No novo D1, manter o gateway 02 em reset por 22 segundos provocou seleção do
+gateway 01, previamente confirmado; após o retorno de 02, o node o redescobriu
+e permaneceu em 01. Repetir com 01 em reset por 22 segundos provocou seleção de
+02, mantida após o retorno de 01. Durante a interrupção de 02, o D1 anterior
+expirou sua seleção e permaneceu sem gateway até 02 voltar, quando confirmou
+novamente o enlace. Os resultados validam descoberta e failover do **novo** D1
+em bancada; não demonstram uma correção para o D1 anterior. Para isolar sua
+falha, comparar as placas mantendo sua posição física e alternando as portas/cabos
+USB entre elas. Em 05/11/2026, `/dev/ttyUSB3` identificou o D1 antigo
+`E8:DB:84:93:4F:E0`; `/dev/ttyUSB4` identificou o novo D1
+`EC:FA:BC:D4:E7:33`. Os gateways estavam em `/dev/ttyUSB0` (MAC de fábrica
+`38:3E:51:D3:E3:74`, ativo `...:01`) e `/dev/ttyUSB2` (MAC de fábrica
+`D4:E9:F4:02:E5:EC`, ativo `...:02`).
+
+Foi feito um teste cruzado sem mover nenhum D1: os dois ESP32 mantiveram
+beacons, e o D1 antigo continuou sem descobrir o gateway 01, enquanto o novo
+D1 recebeu anúncios e respostas dos dois. Isolando os gateways pelo reset:
+
+- Com gateway 01 disponível e 02 em reset, o novo D1 selecionou 01 e registrou
+  25 respostas de 25 sondagens. O D1 antigo não recebeu anúncio 01.
+- Com gateway 02 disponível e 01 em reset, o D1 antigo selecionou 02 e
+  registrou 24/24 respostas; o novo D1 também manteve comunicação com 02.
+- Com 01 e 02 ativos, o D1 antigo recebeu 25/25 respostas de 01 e 24/24 de 02
+  na janela registrada, selecionou 01 e não alternou. Assim, a falha que parecia
+  acompanhar sempre o gateway 01 não se reproduziu nesse ciclo controlado.
+
+O resultado inicial do D1 antigo pode depender de uma condição transitória, mas
+este teste não a identifica. A comparação controlada conclui que ambos os D1
+podem descobrir e responder aos dois gateways na bancada; não identifica a
+causa do comportamento intermitente anterior. A próxima investigação deve
+repetir reinícios de ambos os gateways e do D1 antigo mantendo as placas imóveis,
+registrando logs desde o boot e comparando a estabilidade da recepção.
 
 ### Fase 1 — identidade e compatibilidade de rádio
 
@@ -661,12 +939,13 @@ baseada em ACKs/entrega ou rever a plataforma antes da fase de seleção.
    disponíveis em ambas as plataformas.
 
 **Aceitação para avançar:** identidade não colide e está documentado como obter
-uma medida comparável de qualidade do enlace no Wemos D1 mini. O callback
-ESP-NOW legado do ESP8266 pode não entregar RSSI do quadro diretamente; se isso
-se confirmar no core escolhido, não anunciar seleção exata pelo maior RSSI até
-definir e validar uma alternativa suportada. Opções a avaliar são adaptação da
-camada de recepção, medição de sucesso/tempo de ACK ou migração dos nodes para
-uma placa cuja API exponha RSSI.
+uma medida comparável de qualidade do enlace no Wemos D1 mini. A implementação
+confirmou por assinatura do core que os callbacks atuais não entregam RSSI, mas a
+compatibilidade de rádio ainda requer execução física dos testes acima. Não
+anunciar seleção exata pelo maior RSSI no D1 mini até definir e validar uma
+alternativa suportada. Opções a avaliar são uma API documentada de recepção,
+medição de sucesso/tempo de ACK ou migração dos nodes para uma placa cuja API
+exponha RSSI. A PR 5 depende do resultado de bancada e da decisão dessa métrica.
 
 ### Fase 2 — descoberta e seleção direta, sem mesh
 
@@ -866,7 +1145,7 @@ afetados e os testes de regressão do fluxo sensor → Home Assistant.
 | Cenário | Resultado esperado |
 | --- | --- |
 | Um node e um gateway | Descoberta, registro e dados corretos |
-| Dois gateways diretos com RSSI diferente | Seleciona o de sinal mais forte após filtrar amostras |
+| Dois gateways diretos com RSSI diferente | Seleciona o de sinal mais forte após filtrar amostras; se RSSI indisponível, usa a métrica de enlace definida para a plataforma |
 | RSSI dos gateways muito próximo | Não alterna continuamente; aplica histerese/desempate |
 | Gateway selecionado desligado | Descobre e confirma outro gateway |
 | Um roteador entre node e gateway | Dados chegam com origem preservada e `hops` correto |
@@ -880,9 +1159,11 @@ afetados e os testes de regressão do fluxo sensor → Home Assistant.
 
 ## 15. Critérios de aceitação
 
-- Um node novo encontra gateways autorizados sem `GTWY_MAC` compilado.
+- Um node novo encontra gateways autorizados sem depender de um único
+  `GTWY_MAC` compilado.
 - Entre gateways diretamente visíveis e compatíveis, escolhe o de RSSI recebido
-  mais forte segundo a janela de medição definida.
+  mais forte quando medição confiável estiver disponível, ou usa a métrica de
+  enlace validada e documentada para a plataforma.
 - A seleção é confirmada por comunicação unicast antes de ser persistida.
 - Após reboot, tenta a última rota válida e redescobre se ela estiver fora do ar.
 - Um node sem gateway direto consegue alcançar um gateway por roteador sempre
