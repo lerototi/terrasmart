@@ -1,20 +1,24 @@
 #include <Arduino.h>
 #include <string.h>
 #include "terrasmart_discovery_packet.h"
+#include "terrasmart_discovery_association.h"
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 #include <user_interface.h>
+#include <EEPROM.h>
 #elif defined(ESP32)
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <Preferences.h>
 #endif
 
 namespace {
 constexpr uint8_t CHANNEL = 1;
 using namespace terras_smart_discovery;
+namespace association = terras_smart_discovery::association;
 constexpr uint32_t NETWORK_ID = TERRASMART_DISCOVERY_NETWORK_ID;
 constexpr uint8_t MAX_CANDIDATES = 4;
 constexpr uint8_t QUEUE_SIZE = 16;
@@ -58,6 +62,55 @@ uint32_t sequence = 0, pendingSequence = 0, pendingAt = 0;
 uint32_t nextProbe = 0, lastReport = 0, unmatched = 0, peerErrors = 0;
 uint32_t tableFull = 0;
 bool ready = false;
+bool preferredValid = false;
+uint8_t preferredMac[6] = {};
+#if defined(ESP32)
+Preferences associationPreferences;
+#endif
+
+bool loadAssociation() {
+  uint8_t bytes[association::WIRE_SIZE] = {};
+#if defined(ESP8266)
+  EEPROM.begin(64);
+  for (size_t i = 0; i < sizeof(bytes); ++i) bytes[i] = EEPROM.read(i);
+#elif defined(ESP32)
+  if (!associationPreferences.begin("ts-discovery", true)) return false;
+  const size_t count = associationPreferences.getBytes("assoc", bytes, sizeof(bytes));
+  associationPreferences.end();
+  if (count != sizeof(bytes)) return false;
+#endif
+  association::Record record = {};
+  if (association::decode(bytes, sizeof(bytes), NETWORK_ID, CHANNEL, record) !=
+      association::DecodeResult::OK)
+    return false;
+  memcpy(preferredMac, record.mac, sizeof(preferredMac));
+  preferredValid = true;
+  return true;
+}
+
+bool saveAssociation(const uint8_t *mac) {
+  if (!association::validMac(mac)) return false;
+  if (preferredValid && memcmp(preferredMac, mac, sizeof(preferredMac)) == 0)
+    return true;
+  association::Record record = {};
+  memcpy(record.mac, mac, sizeof(record.mac));
+  record.channel = CHANNEL;
+  record.networkId = NETWORK_ID;
+  uint8_t bytes[association::WIRE_SIZE] = {};
+  if (!association::encode(record, bytes, sizeof(bytes))) return false;
+#if defined(ESP8266)
+  for (size_t i = 0; i < sizeof(bytes); ++i) EEPROM.write(i, bytes[i]);
+  if (!EEPROM.commit()) return false;
+#elif defined(ESP32)
+  if (!associationPreferences.begin("ts-discovery", false)) return false;
+  const size_t written = associationPreferences.putBytes("assoc", bytes, sizeof(bytes));
+  associationPreferences.end();
+  if (written != sizeof(bytes)) return false;
+#endif
+  memcpy(preferredMac, mac, sizeof(preferredMac));
+  preferredValid = true;
+  return true;
+}
 
 void printMac(const uint8_t *mac) {
   for (uint8_t i = 0; i < 6; ++i) {
@@ -127,7 +180,14 @@ void setSelected(int8_t index) {
   selected = index;
   Serial.print("Selection: ");
   if (index < 0) Serial.println("none");
-  else { printMac(candidates[index].mac); Serial.println(" confirmed"); }
+  else {
+    printMac(candidates[index].mac);
+    Serial.println(" confirmed");
+    if (!saveAssociation(candidates[index].mac))
+      Serial.println("Association persistence failed");
+    else
+      Serial.println("Confirmed association saved");
+  }
 }
 
 int8_t findCandidate(const uint8_t *mac) {
@@ -156,6 +216,9 @@ void processEvents() {
             candidates[i] = {};
             candidates[i].used = true;
             memcpy(candidates[i].mac, event.mac, 6);
+            if (preferredValid &&
+                memcmp(preferredMac, event.mac, sizeof(preferredMac)) == 0)
+              nextCandidate = i;
             Serial.print("Candidate discovered: "); printMac(event.mac); Serial.println();
             break;
           }
@@ -185,28 +248,62 @@ void serviceCandidates(uint32_t now) {
     ++c.timeouts;
     c.successes = 0;
     if (c.failures < FAIL_LIMIT) ++c.failures;
-    if (selected == pending && c.failures >= FAIL_LIMIT) setSelected(-1);
+    if (c.failures >= FAIL_LIMIT) {
+      if (selected == pending) setSelected(-1);
+      if (preferredValid &&
+          memcmp(preferredMac, c.mac, sizeof(preferredMac)) == 0) {
+        preferredValid = false;
+        Serial.println("Persisted gateway preference invalidated after probe failures");
+      }
+    }
     pending = -1;
   }
   for (uint8_t i = 0; i < MAX_CANDIDATES; ++i) {
     Candidate &c = candidates[i];
     if (!c.used || now - c.lastBeacon < EXPIRY_MS) continue;
     if (selected == i) setSelected(-1);
+    if (preferredValid &&
+        memcmp(preferredMac, c.mac, sizeof(preferredMac)) == 0) {
+      preferredValid = false;
+      Serial.println("Persisted gateway preference invalidated after beacon expiry");
+    }
     if (pending == i) pending = -1;
     Serial.print("Candidate expired: "); printMac(c.mac); Serial.println();
     removePeer(c.mac);
     c = {};
   }
   if (selected < 0) {
-    // Choose deterministically among confirmed, currently advertised candidates.
+    // Prefer the last confirmed gateway; fall back deterministically after loss.
     int8_t best = -1;
-    for (uint8_t i = 0; i < MAX_CANDIDATES; ++i)
-      if (candidates[i].used && candidates[i].successes >= CONFIRMATIONS &&
-          (best < 0 || memcmp(candidates[i].mac, candidates[best].mac, 6) < 0))
+    for (uint8_t i = 0; i < MAX_CANDIDATES; ++i) {
+      if (!candidates[i].used || candidates[i].successes < CONFIRMATIONS) continue;
+      if (preferredValid &&
+          memcmp(preferredMac, candidates[i].mac, sizeof(preferredMac)) == 0) {
         best = i;
+        break;
+      }
+      if (best < 0 || memcmp(candidates[i].mac, candidates[best].mac, 6) < 0)
+        best = i;
+    }
     if (best >= 0) setSelected(best);
   }
   if (pending >= 0 || static_cast<int32_t>(now - nextProbe) < 0) return;
+  if (preferredValid) {
+    const int8_t preferred = findCandidate(preferredMac);
+    if (preferred >= 0 && candidates[preferred].successes < CONFIRMATIONS) {
+      Packet p = {PROBE, CHANNEL, NETWORK_ID, ++sequence};
+      ++candidates[preferred].probes;
+      pending = preferred;
+      pendingSequence = p.sequence;
+      pendingAt = now;
+      if (!sendPacket(candidates[preferred].mac, p)) {
+        ++peerErrors;
+        pendingAt = now - TIMEOUT_MS;
+      }
+      nextProbe = now + (candidates[preferred].failures ? 250 : PROBE_INTERVAL_MS);
+      return;
+    }
+  }
   for (uint8_t n = 0; n < MAX_CANDIDATES; ++n) {
     uint8_t i = nextCandidate;
     nextCandidate = (nextCandidate + 1) % MAX_CANDIDATES;
@@ -236,6 +333,9 @@ void report() {
   Serial.print(" unmatched="); Serial.print(unmatched);
   Serial.print(" table_full="); Serial.print(tableFull);
   Serial.print(" peer/send errors="); Serial.println(peerErrors);
+  Serial.print("Persisted gateway preference: ");
+  if (preferredValid) { printMac(preferredMac); Serial.println(); }
+  else Serial.println("none");
   for (const Candidate &c : candidates) {
     if (!c.used) continue;
     Serial.print("  MAC="); printMac(c.mac);
@@ -258,6 +358,13 @@ void setup() {
 #endif
   delay(100);
   Serial.println("\nTerraSmart experimental dynamic discovery v2");
+  if (loadAssociation()) {
+    Serial.print("Loaded persisted gateway preference: ");
+    printMac(preferredMac);
+    Serial.println();
+  } else {
+    Serial.println("No valid persisted gateway preference; discovering candidates");
+  }
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 #if defined(ESP8266)

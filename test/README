@@ -10,6 +10,15 @@ and invalid/null output buffers. These tests run on the host and require no
 boards. They do not replace firmware builds or hardware tests for Wi-Fi, MQTT,
 UART, ESP-NOW, and broker behavior.
 
+ESP-NOW discovery packet and persisted-association record validation are covered
+by `test_discovery_packet` and `test_discovery_association`.
+
+Run the persisted-association record tests with:
+
+```bash
+pio test -c platformio-native.ini -e native -f test_discovery_association
+```
+
 The build-script transformation that adapts the pinned FDRS MQTT connect call
 is covered by Python unit tests:
 

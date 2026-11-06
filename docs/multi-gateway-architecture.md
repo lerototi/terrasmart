@@ -514,6 +514,34 @@ repetidamente sem alternância instável; o firmware legado continua disponível
 **Aceitação:** reinicialização ou perda do gateway não exige reconfiguração
 manual e uma associação inválida não impede nova descoberta.
 
+Implementação experimental desta etapa: `espnow_discovery_node.cpp` grava a
+associação somente depois de três respostas unicast consecutivas. O registro
+contém magic, versão, `network_id`, canal, MAC STA ativa do gateway e CRC-32;
+comprimento, endereço unicast, checksum, rede e canal são validados no boot.
+ESP32 usa NVS (`Preferences`); D1 mini usa a região EEPROM emulada. Após reboot,
+o candidato persistido é sondado primeiro e continua sujeito a beacon recente e
+confirmação da aplicação. Com três falhas ou expiração do beacon, a preferência
+em RAM é invalidada e a descoberta geral retoma. A migração v1/vazio/corrompido
+falha aberta para descoberta. Gravação só ocorre quando muda o MAC confirmado,
+evitando writes por beacon; a associação não é credencial nem configuração de
+produção.
+
+Testes unitários do registro: `pio test -c platformio-native.ini -e native -f
+test_discovery_association`. O build de D1 mini reserva 1 MB para EEPROM
+emulada (`eagle.flash.4m1m.ld`); a área usada é o começo da partição EEPROM e
+não grava de novo se a associação confirmada não mudar.
+
+**Bancada de associação persistente, 05/11/2026:** com o D1 mini
+`EC:FA:BC:D4:E7:33` em `ttyUSB3`, o node selecionou o gateway
+`AA:BB:CC:DD:EE:02`, exibiu `Confirmed association saved` e, após reset, carregou
+`Loaded persisted gateway preference: AA:BB:CC:DD:EE:02`, reconfirmando-o em
+quatro respostas correspondentes no primeiro relatório. Mantendo o gateway 02
+em reset, o node invalidou a preferência após falhas, confirmou o gateway 01
+(`AA:BB:CC:DD:EE:01`) e salvou a nova associação. Um segundo reboot carregou a
+preferência 01 e a confirmou em quatro sondagens. Não foram observados timeouts
+para o gateway disponível nem descartes de fila. Os gateways e o node estavam
+em firmwares experimentais; nenhum tráfego de produção foi alterado.
+
 #### PR 7 — piloto do protocolo novo em um node
 
 - Integrar o envelope em um node e no gateway ESP-NOW de teste, incluindo
