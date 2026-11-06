@@ -2,9 +2,10 @@
 
 ## Estado e compatibilidade
 
-Este documento define o contrato para implementação experimental. Sua publicação
-não ativa o protocolo nos firmwares: o tráfego atual FDRS, UART, MQTT, comandos e
-OTA permanece inalterado até uma etapa de implementação e migração própria.
+Este documento define o contrato para implementação experimental. A PR 7a
+implementa o codec e um piloto isolado de rádio com leitura sintética; o tráfego
+atual FDRS, UART, MQTT, comandos e OTA permanece inalterado até uma etapa de
+integração e migração própria.
 
 O contrato v1 atende comunicação direta node → gateway ESP-NOW. Roteamento mesh,
 autenticação criptográfica e seleção por RSSI não fazem parte deste formato e
@@ -69,6 +70,45 @@ O formato v1 não inclui autenticação nem criptografia. `network_id`, `magic` 
 de origem não autenticam um emissor. Até uma decisão de segurança e validação de
 chaves, esse envelope deve permanecer em builds de diagnóstico/piloto isolado e
 nunca ser considerado autorização para comandos ou provisionamento.
+
+## Piloto PR 7a: execução e resultado de bancada
+
+O codec `include/terrasmart_data_v1.h` codifica e valida o quadro de leitura de
+37 bytes sem copiar o layout em memória do `DataReading` FDRS. O piloto usa
+`src/espnow_data_pilot.cpp`: D1 mini gera `id=42`, `t=25` (`LEVEL_T`),
+`d=23.5`; ESP32 valida o endereço de destino de fábrica e compara a MAC de
+origem do envelope com a MAC informada pelo callback, e imprime os campos.
+O callback copia os quadros para uma fila limitada; comprimento inválido e fila
+cheia são contabilizados. A comparação de MAC não autentica a origem.
+
+```bash
+pio test -c platformio-native.ini -e native -f test_data_v1
+pio run -e esp32dev_data_v1_pilot
+pio run -e d1_mini_data_v1_pilot
+```
+
+Os ambientes piloto usam a MAC STA de fábrica `38:3E:51:D3:E3:74` do ESP32 de
+bancada como destino, configurada nos seis `PILOT_GATEWAY_MAC_*` do
+`platformio.ini`. Ajustar os dois ambientes para outra placa; o gateway verifica
+sua própria MAC e não inicia se ela divergir. O `network_id` padrão é o valor
+de diagnóstico definido em `terrasmart_discovery_packet.h`. Este piloto não
+usa descoberta nem associação persistida: essa integração precisa ser testada
+em uma etapa posterior. O node usa `ESP.random()` após iniciar o rádio para
+gerar o `boot_id`; não é credencial. O gateway não implementa deduplicação nem
+ACK de aplicação; sucesso de callback de envio não comprova processamento.
+
+**Bancada:** gateway ESP32 `38:3E:51:D3:E3:74` em `/dev/ttyUSB0`, D1 mini
+`EC:FA:BC:D4:E7:33` em `/dev/ttyUSB3`, canal 1. O gateway registrou leituras
+com `id=42`, `type=25`, `data=23.50`, destino e origem esperados e sequências
+consecutivas. No trecho observado, o node apresentou 18/18 callbacks de envio
+bem-sucedidos, e o gateway 18 quadros aceitos e zero descartes de fila. Havia
+outro tráfego ESP-NOW na bancada, contabilizado como quadros incompatíveis;
+não foi atribuída origem a esses descartes. Ao reiniciar o D1, o `boot_id`
+mudou de `1360810553` para `1353466009`, e a sequência voltou de 29 para 1;
+as leituras seguintes foram recebidas com os mesmos campos FDRS. Isso valida
+uma execução em bancada, não garante unicidade estatística do RNG nem comprova
+entrega UART/MQTT. O roteiro da PR 7b está em
+[`multi-gateway-architecture.md`](multi-gateway-architecture.md#pr-7b--ponte-uartmqtt-versionada-do-piloto).
 
 ## Payload MQTT versionado
 

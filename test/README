@@ -12,6 +12,8 @@ UART, ESP-NOW, and broker behavior.
 
 ESP-NOW discovery packet and persisted-association record validation are covered
 by `test_discovery_packet` and `test_discovery_association`.
+The v1 data envelope's wire format and malformed-frame rejection are covered by
+`test_data_v1`.
 
 Run the persisted-association record tests with:
 

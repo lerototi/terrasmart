@@ -542,17 +542,52 @@ preferência 01 e a confirmou em quatro sondagens. Não foram observados timeout
 para o gateway disponível nem descartes de fila. Os gateways e o node estavam
 em firmwares experimentais; nenhum tráfego de produção foi alterado.
 
-#### PR 7 — piloto do protocolo novo em um node
+#### PR 7a — piloto isolado do envelope de dados ESP-NOW
 
-- Integrar o envelope em um node e no gateway ESP-NOW de teste, incluindo
-  identidade da origem e sequência.
-- Adaptar a UART em modo versionado e validar um gateway MQTT conectado ao mesmo
-  broker usado pelos demais.
-- Manter o formato MQTT legado para os dispositivos ainda não migrados; não
-  alterar todos os nodes nesta PR.
+- Implementar o codec binário do [contrato v1](multi-gateway-protocol-v1.md),
+  com serialização explícita e validação de rede, destino, versão e comprimento.
+- Usar ambientes de bancada independentes para um node D1 mini e um gateway
+  ESP32. O node gera uma leitura FDRS sintética; o gateway decodifica e imprime
+  identidade, boot, sequência e leitura, sem inicializar FDRS de produção.
+- Manter endereçamento fixo ao MAC STA de fábrica do ESP32 de bancada. A
+  associação dinâmica e o transporte de dados ainda não estão integrados.
+- Testar bytes conhecidos, rejeição de quadros inválidos, identidade e sequência
+  no rádio, incluindo reboot do node e mudança de `boot_id`.
 
-**Aceitação:** um node atualizado entrega leituras identificadas ponta a ponta,
-sem quebrar nodes legados ou automações que consomem o tópico antigo.
+**Aceitação desta subetapa:** builds ESP8266/ESP32 e testes do codec aprovados;
+gateway piloto recebe o conteúdo e os identificadores esperados pela serial.
+Não é uma prova sensor → MQTT nem uma ativação dos firmwares de produção.
+
+#### PR 7b — ponte UART/MQTT versionada do piloto
+
+**Objetivo:** transportar uma leitura v1 recebida pelo ESP32 até o tópico
+`terrasmart/data/v1`, preservando a origem e o contrato legado.
+
+1. Definir o framing UART v1 antes de implementar: delimitação, tamanho máximo,
+   versão, CRC, timeout, ressincronização e comportamento diante de bytes
+   parciais, quadros OTA e dados legados. Não assumir que o parser JSON UART
+   existente reconhece o novo formato.
+2. No gateway ESP32 piloto, enfileirar uma representação validada da leitura
+   com `source_mac`, MAC de fábrica do gateway de rádio, `boot_id`, `sequence`
+   e campos FDRS; limitar memória e contabilizar descarte por fila cheia.
+3. No gateway MQTT D1 mini, identificar seu próprio `gateway_id`, validar o
+   framing e publicar um objeto v1 por leitura conforme o contrato. A associação
+   do ESP32 ao front-end MQTT deve ser configurada no par. Não inferir origem
+   a partir do gateway MQTT. Usar `hops: 0` no enlace direto.
+4. Manter `terrasmart/data` como array legado; se houver dupla publicação,
+   usar apenas o formato legado nesse tópico e o objeto no tópico `/v1`.
+   Definir explicitamente deduplicação por `node_id + boot_id + sequence`,
+   filas, limites e política quando UART ou broker estiverem indisponíveis.
+5. Testar parser com quadros truncados, CRC incorreto, versões desconhecidas,
+   excesso de comprimento, fragmentação, sequência duplicada e coexistência OTA;
+   em bancada, confirmar origem, sequência, valores e tópicos no broker e testar
+   reinício/desconexão sem afetar clientes legados.
+
+**Aceitação da PR 7b:** a mesma leitura do piloto chega ao broker com
+`node_id`, `gateway_id`, `radio_gateway_id`, `boot_id`, sequência e dados
+corretos; o payload legado e os canais de comando/OTA existentes permanecem
+compatíveis. Autenticação/provisionamento e validação do D1 intermitente seguem
+pendentes antes de qualquer migração para produção.
 
 #### PR 8 — integração multi-gateway no broker compartilhado
 
