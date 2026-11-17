@@ -89,13 +89,15 @@ constexpr unsigned long WIFI_RETRY_INTERVAL = 30000;
 Preferences preferences;
 WebServer server(80);
 #else
+// EEPROM.commit() erases the entire flash sector, so both firmwares must load
+// and rewrite both records, even though each modifies only its own slot.
+constexpr size_t EEPROM_CONFIG_SLOT_SIZE = 512;
+constexpr size_t EEPROM_CONFIG_SIZE = 2 * EEPROM_CONFIG_SLOT_SIZE;
 #if defined(TERRASMART_PILOT_PORTAL)
-constexpr size_t EEPROM_CONFIG_OFFSET = 512;
-constexpr size_t EEPROM_CONFIG_SIZE = 1024;
+constexpr size_t EEPROM_CONFIG_OFFSET = EEPROM_CONFIG_SLOT_SIZE;
 constexpr uint32_t EEPROM_CONFIG_MAGIC = 0x54535046; // "TSPF"
 #else
 constexpr size_t EEPROM_CONFIG_OFFSET = 0;
-constexpr size_t EEPROM_CONFIG_SIZE = 512;
 constexpr uint32_t EEPROM_CONFIG_MAGIC = 0x54534346; // "TSCF"
 #endif
 struct PersistedConfig {
@@ -109,6 +111,8 @@ struct PersistedConfig {
   char mqttPassword[65];
   uint32_t checksum;
 };
+static_assert(sizeof(PersistedConfig) <= EEPROM_CONFIG_SLOT_SIZE,
+              "MQTT EEPROM configuration exceeds its reserved slot");
 ESP8266WebServer server(80);
 #endif
 DNSServer dnsServer;

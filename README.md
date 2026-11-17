@@ -70,8 +70,13 @@ and the UART/MQTT pilot on ESP32 and ESP8266. It provides the AP, Wi-Fi scan,
 status, configuration and reset pages. Hardware-specific storage remains in
 the same component: production uses ESP32 NVS `terrasmart` or ESP8266 EEPROM
 offset 0; the isolated pilot uses ESP32 NVS `ts-pilot` or ESP8266 EEPROM offset
-512. The ESP8266 pilot's enlarged emulated EEPROM preserves the existing first
-512 bytes. Pilot settings do not replace production settings. The pilot has no
+512. Both ESP8266 MQTT firmware variants load 1024 bytes so saving either
+configuration preserves the other slot. Older production firmware with a
+512-byte buffer may erase the pilot slot when saving or resetting; previously
+erased pilot settings must be entered again. The experimental ESP8266 discovery
+node independently uses the beginning of EEPROM and can overwrite these records;
+do not switch a configured MQTT device to that firmware without a backup.
+Pilot settings do not replace production settings. The pilot has no
 FDRS command or OTA support. See `AGENTS.md` for the project reuse policy.
 
 The firmware in `src/gateway.cpp` is intentionally an ESP-NOW-only gateway. It does not connect to Wi-Fi, so there is no active SSID/password in `include/terrasmart_gateway_config.h`.

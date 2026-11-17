@@ -68,7 +68,9 @@ class MqttConnectPatchTests(unittest.TestCase):
 
     def test_runtime_config_save_checks_before_reporting_success(self):
         source = (
-            Path(__file__).resolve().parents[1] / "src" / "mqtt_gateway.cpp"
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "terrasmart_mqtt_gateway_shared.inc"
         ).read_text(encoding="utf-8")
         handler = source[
             source.index("void handleSave()") : source.index("void handleReset()")

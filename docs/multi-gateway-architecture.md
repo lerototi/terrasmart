@@ -612,6 +612,25 @@ implementa o caminho legado nem OTA. Credenciais locais podem ser colocadas em
 e `PILOT_MQTT_PASSWORD`. O build de teste USB pode usar os segredos locais já
 existentes via `PILOT_USE_SHARED_SECRETS`, sem registrá-los nos logs.
 
+A recepção UART do piloto ESP32 é executada em tarefa própria; no ESP8266, uma
+função recorrente do scheduler atende a UART durante operações que cedem o
+processador, e o cliente TCP atende a UART enquanto PubSubClient aguarda
+CONNACK. Ambos usam o mesmo parser e fila, com exclusão mútua no ESP32. No
+ESP8266, o atendimento cooperativo depende de chamadas a `yield()` ou da leitura
+de disponibilidade TCP: períodos longos sem ceder ou interrupções bloqueadas
+podem ainda causar perda; SoftwareSerial também está sujeito a limitações de
+rádio e capacidade. A fila continua limitada a sete leituras, sem persistência
+ou ACK UART; quando cheia, novas leituras são descartadas e contabilizadas.
+
+**Bancada de reconexão ESP32:** com os três ESP32 e a UART física conectada, um
+servidor de teste aceitou conexões TCP e reteve o CONNACK. Durante duas tentativas
+de conexão, o gateway continuou recebendo, acumulou seis leituras, e reportou
+zero quadros inválidos, rejeições, duplicatas e descartes. Após restaurar o
+broker, a fila esvaziou; assinante independente recebeu 14 sequências
+consecutivas 2992–3005. A configuração MQTT original foi restaurada. Os pilotos
+ESP32 e ESP8266 compilaram, mas a situação de bloqueio e a UART SoftwareSerial
+do ESP8266 ainda precisam ser testadas fisicamente.
+
 **Front-end MQTT ESP32:** o ambiente `esp32dev_uart_mqtt_pilot` compila o mesmo
 piloto para ESP32 e usa UART1 dedicada a 9600 baud (RX GPIO16, TX GPIO17). Para
 a configuração privada de bancada já existente em `include/terrasmart_secrets.h`,
@@ -627,7 +646,14 @@ emulada no ESP8266; produção mantém NVS `terrasmart` e offset 0. No ESP32, as
 chaves do primeiro portal experimental são carregadas do mesmo namespace e
 recebem o marcador `configured`. No ESP8266, o piloto anteriormente usava
 credenciais de build, usadas como valores iniciais; o novo registro não altera
-os primeiros 512 bytes de configuração de produção. O piloto não implementa
+os primeiros 512 bytes de configuração de produção. Ambos os firmwares MQTT
+ESP8266 carregam 1024 bytes antes de gravar, pois `EEPROM.commit()` apaga o
+setor inteiro; assim cada um preserva o slot do outro. Firmwares antigos de
+produção que carregam apenas 512 bytes podem apagar o slot do piloto ao salvar
+ou redefinir; um registro já apagado precisa ser configurado novamente. O node
+experimental de descoberta ESP8266 usa `EEPROM.begin(64)` e grava no início da
+mesma EEPROM emulada, podendo sobrescrever esses registros ao trocar de firmware.
+O piloto não implementa
 comandos FDRS ou OTA, mesmo utilizando a página e o status comuns.
 
 **Bancada do portal compartilhado:** no ESP32 `38:3E:51:D3:E3:74`, o AP

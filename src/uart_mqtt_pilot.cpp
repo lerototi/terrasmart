@@ -2,6 +2,7 @@
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
 #include <SoftwareSerial.h>
+#include <Schedule.h>
 #elif defined(ESP32)
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -55,7 +56,18 @@
 #define MQTT_USER PILOT_MQTT_USER
 #define MQTT_PASS PILOT_MQTT_PASSWORD
 #endif
+#if defined(ESP8266)
+void servicePilotUart();
+// PubSubClient's CONNACK wait polls available() without yielding. The regular
+// scheduler handles yielding TCP/DNS waits; this hook covers that busy wait.
+class PilotWiFiClient : public WiFiClient {
+ public:
+  int available() override { servicePilotUart(); return WiFiClient::available(); }
+};
+PilotWiFiClient wifiClient;
+#else
 WiFiClient wifiClient;
+#endif
 PubSubClient client(wifiClient);
 const char *ssid = nullptr, *password = nullptr, *mqtt_server = nullptr;
 const char *mqtt_user = nullptr, *mqtt_pass = nullptr;
@@ -75,6 +87,18 @@ uint8_t head = 0, tail = 0;
 uint32_t dropped = 0, invalid = 0, framingRejected = 0, duplicate = 0, published = 0;
 uint32_t uartBytes = 0, uartMarkers = 0;
 uint32_t lastReport = 0, nextMqttAttempt = 0;
+bool uartServiceReady = false;
+#if defined(ESP32)
+portMUX_TYPE queueLock = portMUX_INITIALIZER_UNLOCKED;
+void lockQueue() { portENTER_CRITICAL(&queueLock); }
+void unlockQueue() { portEXIT_CRITICAL(&queueLock); }
+#else
+// The ESP8266 scheduler runs on the same cooperative stack. Queue operations
+// below do not yield, so the recurrent reader cannot interrupt them.
+void lockQueue() {}
+void unlockQueue() {}
+bool uartReading = false;
+#endif
 uint8_t ownMac[6] = {};
 char clientId[16] = {}, gatewayId[16] = {};
 PubSubClient &mqtt = client;
@@ -105,28 +129,52 @@ void receivePayload(const uint8_t *payload) {
   if (memcmp(payload, expectedRadioMac, 6) ||
       !terras_smart_data_v1::decode(payload + 6, terras_smart_data_v1::FRAME_SIZE,
           TERRASMART_DISCOVERY_NETWORK_ID, expectedRadioMac, frame) || !isfinite(frame.reading.data)) {
-    ++invalid; return;
+    lockQueue(); ++invalid; unlockQueue(); return;
   }
-  if (isDuplicate(frame)) { ++duplicate; return; }
+  lockQueue();
+  if (isDuplicate(frame)) { ++duplicate; unlockQueue(); return; }
   uint8_t next = (head + 1) % QUEUE_SIZE;
-  if (next == tail) { ++dropped; return; }
+  if (next == tail) { ++dropped; unlockQueue(); return; }
   queue[head].frame = frame; head = next;
+  unlockQueue();
 }
 void readUart() {
+#if defined(ESP8266)
+  if (uartReading) return;
+  uartReading = true;
+#endif
   uint8_t payload[terras_smart_uart_v1::PAYLOAD_SIZE];
-  while (pilotUart.available()) {
+  // Bound work per invocation so a continuously busy link cannot starve the
+  // network or the ESP8266 recurrent scheduler.
+  unsigned count = 0;
+  while (count++ < 256 && pilotUart.available()) {
     const char byte = static_cast<char>(pilotUart.read());
+    lockQueue();
     ++uartBytes;
     if (byte == '!') ++uartMarkers;
+    unlockQueue();
     auto result = parser.feedResult(byte, millis(), payload);
     if (result == terras_smart_uart_v1::Parser::Result::FRAME) receivePayload(payload);
-    else if (result == terras_smart_uart_v1::Parser::Result::REJECTED) ++framingRejected;
+    else if (result == terras_smart_uart_v1::Parser::Result::REJECTED) {
+      lockQueue(); ++framingRejected; unlockQueue();
+    }
   }
   parser.expire(millis());
+#if defined(ESP8266)
+  uartReading = false;
+#endif
 }
+#if defined(ESP32)
+void uartTask(void *) {
+  for (;;) { readUart(); vTaskDelay(1); }
+}
+#endif
 void publishPending() {
-  if (!mqtt.connected() || head == tail) return;
-  const auto &f = queue[tail].frame;
+  if (!mqtt.connected()) return;
+  lockQueue();
+  if (head == tail) { unlockQueue(); return; }
+  const auto f = queue[tail].frame;
+  unlockQueue();
   char value[64];
   // Nine significant decimal digits round-trip a binary32 value.
   snprintf(value, sizeof(value), "%.9g", static_cast<double>(f.reading.data));
@@ -140,14 +188,22 @@ void publishPending() {
       expectedRadioMac[0], expectedRadioMac[1], expectedRadioMac[2], expectedRadioMac[3], expectedRadioMac[4], expectedRadioMac[5],
       static_cast<unsigned long>(f.bootId), static_cast<unsigned long>(f.sequence),
       f.reading.id, f.reading.type, value);
-  if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) { ++invalid; tail = (tail + 1) % QUEUE_SIZE; return; }
+  if (n <= 0 || static_cast<size_t>(n) >= sizeof(json)) {
+    lockQueue(); ++invalid; tail = (tail + 1) % QUEUE_SIZE; unlockQueue(); return;
+  }
   if (!mqtt.publish("terrasmart/data/v1", json, false)) return;
+  lockQueue();
   Key &k = cache[nextKey]; k.used = true; memcpy(k.source, f.source, 6);
   k.boot = f.bootId; k.seq = f.sequence; nextKey = (nextKey + 1) % 16;
   tail = (tail + 1) % QUEUE_SIZE; ++published;
+  unlockQueue();
   Serial.print("MQTT published: "); Serial.println(json);
 }
 } // namespace
+
+#if defined(ESP8266)
+void servicePilotUart() { if (uartServiceReady) readUart(); }
+#endif
 
 void setup() {
   Serial.begin(115200); delay(100);
@@ -174,9 +230,15 @@ void setup() {
 #if defined(ESP32)
   pilotUart.begin(9600, SERIAL_8N1, 16, 17);
 #else
-  pilotUart.begin(9600);
+  pilotUart.begin(9600, SWSERIAL_8N1, D6, D7, false, 128);
 #endif
 #endif
+#if defined(ESP32)
+  uartServiceReady = xTaskCreate(uartTask, "pilot_uart", 4096, nullptr, 2, nullptr) == pdPASS;
+#else
+  uartServiceReady = schedule_recurrent_function_us([]() { readUart(); return true; }, 1000);
+#endif
+  if (!uartServiceReady) Serial.println("UART receiver service failed; MQTT reconnect disabled");
   mqtt.setBufferSize(512); mqtt.setSocketTimeout(1);
   buildApIdentity(); loadConfiguration(); applyConfiguration();
   networkInitialized = true;
@@ -188,13 +250,15 @@ void setup() {
   Serial.print("Gateway ID: "); Serial.println(gatewayId);
 }
 void loop() {
+#if defined(ESP8266)
   readUart();
+#endif
 #if defined(ESP32)
   handlePhysicalReset();
 #endif
   maintainCaptivePortal(); server.handleClient(); maintainWifi(); maintainMdns();
   uint32_t now = millis();
-  if (WiFi.status() == WL_CONNECTED && !mqtt.connected() && runtimeConfigured && mqttHost.length() &&
+  if (uartServiceReady && WiFi.status() == WL_CONNECTED && !mqtt.connected() && runtimeConfigured && mqttHost.length() &&
       static_cast<int32_t>(now - nextMqttAttempt) >= 0) {
     nextMqttAttempt = now + 5000;
     if (mqttUser.length()) mqtt.connect(clientId, mqttUser.c_str(), mqttPassword.c_str());
@@ -203,11 +267,16 @@ void loop() {
   mqtt.loop(); publishPending();
   if (now - lastReport >= 5000) {
     lastReport = now;
+    lockQueue();
+    const uint8_t queued = (head + QUEUE_SIZE - tail) % QUEUE_SIZE;
+    const uint32_t localPublished = published, localBytes = uartBytes, localMarkers = uartMarkers;
+    const uint32_t localInvalid = invalid, localRejected = framingRejected, localDuplicate = duplicate, localDropped = dropped;
+    unlockQueue();
     Serial.printf("WiFi=%d MQTT=%d queued=%u published=%lu uart_bytes=%lu uart_markers=%lu invalid=%lu framing_rejected=%lu duplicate=%lu dropped=%lu\n",
-        WiFi.status() == WL_CONNECTED, mqtt.connected(), (head + QUEUE_SIZE - tail) % QUEUE_SIZE,
-        static_cast<unsigned long>(published), static_cast<unsigned long>(uartBytes),
-        static_cast<unsigned long>(uartMarkers), static_cast<unsigned long>(invalid),
-        static_cast<unsigned long>(framingRejected), static_cast<unsigned long>(duplicate), static_cast<unsigned long>(dropped));
+        WiFi.status() == WL_CONNECTED, mqtt.connected(), queued,
+        static_cast<unsigned long>(localPublished), static_cast<unsigned long>(localBytes),
+        static_cast<unsigned long>(localMarkers), static_cast<unsigned long>(localInvalid),
+        static_cast<unsigned long>(localRejected), static_cast<unsigned long>(localDuplicate), static_cast<unsigned long>(localDropped));
   }
   delay(1);
 }
