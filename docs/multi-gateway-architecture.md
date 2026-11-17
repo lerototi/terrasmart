@@ -28,15 +28,15 @@ aplicação.
 O plano de implementação assume a seguinte composição:
 
 - gateways de rádio ESP-NOW: ESP32;
-- gateway Wi-Fi/MQTT: Wemos D1 mini baseado em ESP8266;
+- gateway Wi-Fi/MQTT: ESP32 dedicado, separado do gateway de rádio;
 - nodes sensores/folhas: Wemos D1 mini baseado em ESP8266;
 - primeiro roteador mesh de teste: ESP32 dedicado e sempre ligado.
 
 O gateway MQTT é um equipamento separado do gateway ESP-NOW. A comunicação
 entre os dois continuará pelo link de integração já usado/configurado no
-firmware (atualmente UART para a topologia com gateway ESP32). O Wemos D1 mini
-é a plataforma prevista para o front-end MQTT; as restrições de UART do ESP8266
-precisam ser respeitadas durante os testes.
+firmware (atualmente UART para a topologia com gateway ESP32). Após dificuldades
+com as placas D1 mini na bancada, o front-end MQTT passa a usar outro ESP32.
+Os ambientes antigos de ESP8266 permanecem disponíveis para compatibilidade.
 
 Os Wemos D1 mini sensores serão folhas na primeira versão, mesmo quando
 alimentados continuamente. Assim, a validação do roteamento não depende de
@@ -589,6 +589,165 @@ corretos; o payload legado e os canais de comando/OTA existentes permanecem
 compatíveis. Autenticação/provisionamento e validação do D1 intermitente seguem
 pendentes antes de qualquer migração para produção.
 
+**Protótipo isolado PR 7b:** o framing UART usa linha ASCII fixa de 100 bytes:
+`!TS1:` + 86 caracteres hexadecimais maiúsculos representando 43 bytes
+(`radio_gateway_mac[6]` + envelope ESP-NOW de 37 bytes) + CRC-32 IEEE de oito
+caracteres hexadecimais sobre os 43 bytes + `\n`. O parser limita o tamanho,
+expira fragmentos após um segundo e se ressincroniza ao receber `!`. Linhas
+estranhas, tamanho ou CRC inválido não são entregues. Este parser opera em UART
+dedicada ao piloto: reconhecer uma linha OTA como inválida **não** demonstra
+coexistência com o parser FDRS/OTA de produção.
+
+O ESP32 `esp32dev_data_uart_pilot` usa TX GPIO17 e RX GPIO16 a 9600 baud; o
+front-end `d1_mini_uart_mqtt_pilot` usa RX D6/GPIO12 e TX D7/GPIO13 por
+SoftwareSerial. Conectar TX→RX, RX→TX e GND comum para o teste físico. A ponte
+verifica o MAC de rádio configurado, rede e destino; mantém fila RAM de sete
+leituras (descarta novas quando cheia) e cache de 16 mensagens já publicadas,
+identificadas por origem, boot e sequência. Não há persistência da fila/cache,
+ACK UART de aplicação ou confirmação de entrega MQTT além do resultado QoS 0
+do cliente. O piloto publica somente `/v1`, rejeita valores não finitos e não
+implementa o caminho legado nem OTA. Credenciais locais podem ser colocadas em
+`include/terrasmart_pilot_secrets.h`, ignorado pelo Git, com `PILOT_WIFI_SSID`,
+`PILOT_WIFI_PASSWORD`, `PILOT_MQTT_HOST`, `PILOT_MQTT_PORT`, `PILOT_MQTT_USER`
+e `PILOT_MQTT_PASSWORD`. O build de teste USB pode usar os segredos locais já
+existentes via `PILOT_USE_SHARED_SECRETS`, sem registrá-los nos logs.
+
+**Front-end MQTT ESP32:** o ambiente `esp32dev_uart_mqtt_pilot` compila o mesmo
+piloto para ESP32 e usa UART1 dedicada a 9600 baud (RX GPIO16, TX GPIO17). Para
+a configuração privada de bancada já existente em `include/terrasmart_secrets.h`,
+use `esp32dev_uart_mqtt_pilot_local`; o arquivo é ignorado pelo Git. Este
+ambiente espera o gateway de rádio de MAC STA `D4:E9:F4:02:E5:EC`, configurado
+em `pilot_uart_bench_identity`. Para outra placa, ajustar essa configuração no
+node emissor, gateway de rádio e gateway MQTT antes da gravação.
+
+O portal de configuração do piloto ESP32 e ESP8266 é compartilhado com os
+gateways MQTT de produção em `src/terrasmart_mqtt_gateway_shared.inc`. A
+persistência do piloto é isolada: NVS `ts-pilot` no ESP32 e offset 512 da EEPROM
+emulada no ESP8266; produção mantém NVS `terrasmart` e offset 0. No ESP32, as
+chaves do primeiro portal experimental são carregadas do mesmo namespace e
+recebem o marcador `configured`. No ESP8266, o piloto anteriormente usava
+credenciais de build, usadas como valores iniciais; o novo registro não altera
+os primeiros 512 bytes de configuração de produção. O piloto não implementa
+comandos FDRS ou OTA, mesmo utilizando a página e o status comuns.
+
+**Bancada do portal compartilhado:** no ESP32 `38:3E:51:D3:E3:74`, o AP
+`TerraSmart-Setup-3E38` foi detectado; a página, `/api/status` e a varredura
+`/api/networks` responderam. Salvar novamente os valores existentes retornou
+HTTP 200 e Wi-Fi/MQTT reconectaram; após nova gravação, ambos apareceram
+conectados. Não houve teste físico do portal compartilhado no ESP8266 nem do
+enlace UART durante este ensaio. A abertura da porta serial produziu mensagens
+de boot repetidas antes de estabilizar, sem causa identificada.
+
+Ligação entre dois ESP32 do piloto (ambos com GND comum):
+
+| Gateway de rádio ESP-NOW | Gateway MQTT |
+| --- | --- |
+| GPIO17 / TX | GPIO16 / RX |
+| GPIO16 / RX | GPIO17 / TX |
+| GND | GND |
+
+```bash
+pio run -e esp32dev_data_uart_bench
+pio run -e esp32dev_uart_mqtt_pilot_local
+pio test -c platformio-native.ini -e native -f test_uart_v1
+```
+
+Os dois ambientes ESP32 e os testes nativos de framing compilaram/passaram;
+a comunicação física ESP32 ↔ ESP32 ainda requer gravação das placas e teste
+em bancada. A UART do piloto é independente da UART de produção e não prova
+compatibilidade FDRS/OTA. O ambiente de produção já existente para um ESP32
+front-end MQTT é `esp32dev_mqtt_gateway`; ele é diferente deste piloto v1.
+
+**Bancada parcial:** o ESP32 node (`ttyUSB2`, MAC `D4:E9:F4:02:E5:EC`)
+enviou leitura sintética ao gateway ESP32 (`ttyUSB0`, MAC
+`38:3E:51:D3:E3:74`); o computador retransmitiu os frames serializados entre os
+USBs para o D1 MQTT (`ttyUSB3`, MAC `EC:FA:BC:D4:E7:33`). Um assinante
+independente recebeu no broker 14/14 quadros encaminhados, sequências 111–124,
+com `node_id=node-D4E9F402E5EC`, `gateway_id=gw-ECFABCD4E733`,
+`radio_gateway_id=rgw-383E51D3E374`, `id=42`, `type=25`, `data=23.5`.
+Este ensaio usa uma ponte USB do computador, não o fio UART GPIO. O piloto usa
+um ESP32 como emissor sintético porque o único D1 conectado foi usado como
+front-end MQTT; o caminho rádio D1 → ESP32 foi testado separadamente na PR 7a.
+O teste físico UART, tolerância a desconexão, duplicatas em hardware, coexistência
+FDRS/OTA e regressão do tópico legado permanecem pendentes: os critérios da PR
+7b ainda não estão completos.
+
+**Bancada com três ESP32 e UART física, 17/11/2026:** gateway MQTT
+`38:3E:51:D3:E3:74` em `/dev/ttyUSB0`, gateway ESP-NOW
+`D4:E9:F4:02:E5:EC` em `/dev/ttyUSB1` e node sintético
+`B4:BF:E9:33:F4:98` em `/dev/ttyUSB2`. O node piloto fixo registrou
+10 envios confirmados pelo enlace, zero falhas e zero erros de fila. O gateway
+registrou as sequências 1–11, leituras `id=42`, `type=25`, `data=23.50`, e
+no relatório `Accepted=10 rejected=0 queue_drops=0 uart_forwarded=10
+uart_drops=0`. O contador `uart_forwarded` confirma somente escrita na UART
+local, não recepção no outro ESP32. No mesmo intervalo o MQTT mostrou
+`WiFi=1 MQTT=1`, mas `published=0`, `invalid=0` e `framing_rejected=0`;
+um assinante independente conectou ao broker e não recebeu nenhuma mensagem
+em `terrasmart/data/v1`. Portanto rádio e conexão MQTT foram verificados
+separadamente, mas o enlace físico e o fluxo ponta a ponta não passaram.
+Conferir GPIO17 do rádio → GPIO16 do MQTT e GND comum; a linha inversa usa
+GPIO17 do MQTT → GPIO16 do rádio. A descoberta dinâmica é um experimento
+separado e não está integrada a este piloto de dados de destino fixo.
+
+Tentativa de teste separado de descoberta: a gravação do probe no gateway
+ESP-NOW falhou antes da escrita, com ausência de resposta de sincronização do
+bootloader; o firmware de dados permaneceu instalado e continuou recebendo.
+Não há resultado de descoberta desta bancada.
+
+**Continuação:** a continuidade dos fios cruzados TX/RX e do GND foi verificada
+pelo usuário. Os firmwares configuram UART1 com GPIO16 RX, GPIO17 TX e
+9600 8N1; a continuidade sozinha não identifica a causa da ausência de quadros.
+Foi acrescentada contagem de bytes e marcadores no piloto MQTT para distinguir
+ausência de sinal de dados parciais ou corrompidos. Os builds ESP32 e ESP8266
+compilaram, mas a gravação no ESP32 MQTT com os fios ligados falhou no sync do
+bootloader antes da escrita. O firmware anterior permanece em execução e
+conectado. Repetir a gravação com os fios UART temporariamente desconectados e
+reconectá-los para observar os novos contadores.
+
+**Ligação corrigida e descoberta separada:** após mudar os fios para GPIO17→16
+e GPIO16←17 nos dois ESP32, um assinante MQTT independente recebeu 10 leituras
+consecutivas (sequências 2–11, `boot_id=3387080910`) em `terrasmart/data/v1`,
+com node `B4:BF:E9:33:F4:98`, gateway MQTT `38:3E:51:D3:E3:74`, gateway rádio
+`D4:E9:F4:02:E5:EC` e leitura `42/25/23.5`. O primeiro envio do node falhou
+durante inicialização simultânea; os demais desse intervalo tiveram sucesso.
+Outra execução mostrou os mesmos quadros nos logs dos gateways, sem rejeições
+nem descartes, e MQTT conectado. É uma amostra curta, sem avaliação de alcance,
+perda prolongada, comandos ou OTA.
+
+Em teste separado, o gateway recebeu o probe experimental v2 (MAC ativa
+`AA:BB:CC:DD:EE:01`); o node descobriu e confirmou esse endereço, com 25
+sondagens e 25 respostas, zero timeouts e zero descartes relatados. Foi carregada
+uma preferência já persistida, então não é prova de primeira associação limpa.
+A descoberta ainda não está integrada ao piloto de dados: este envia ao MAC
+fixo do gateway. Após o teste, ambos os firmwares de dados foram restaurados;
+um assinante recebeu mais sete mensagens no broker. O upload do gateway gravou
+e verificou os hashes, mas o PlatformIO reportou erro SCons ao finalizar; o
+boot e as novas leituras confirmaram a execução da imagem restaurada.
+
+**Tentativa de gravação do front-end D1 mini:** em 06/11/2026, foi conectado um
+D1 mini em `/dev/ttyUSB0` (CP2102; MAC informado pelo ROM
+`40:F5:20:1B:A9:FC`). O build `d1_mini_uart_mqtt_pilot_local` compila usando a
+configuração local, mas o upload falha durante a gravação. O ROM informa
+`boot mode:(3,4)` e entra em exceção; uma leitura `esptool flash_id` em 57600
+baud reporta `Manufacturer: 00`, `Device: 0000`, flash size desconhecido e
+falha de comunicação com o chip flash. Assim, ainda não é possível validar a
+inicialização do firmware nesse D1. A tentativa ocorreu antes de ligar qualquer
+fio UART aos ESP32. O upload do D1 e o teste integrado permanecem pendentes de
+uma placa cuja flash possa ser identificada/programada.
+
+**Bancada seguinte — identidade do gateway corrigida:** o ESP32 conectado
+identificou-se pelo bootloader como `D4:E9:F4:02:E5:EC`, enquanto o firmware
+anterior esperava `38:3E:51:D3:E3:74`; a verificação de MAC bloqueava sua
+inicialização. O ambiente `esp32dev_data_uart_bench` usa a MAC real e imprime
+separadamente a identidade esperada, a lida e erros de inicialização. Após
+upload, inicializou o ESP-NOW. O D1 emissor de MAC `40:F5:20:03:92:89` foi
+gravado com `d1_mini_data_v1_bench_node`: o ESP32 aceitou 20 leituras consecutivas
+com `id=42`, `type=25`, `data=23.50`, sem descartes, e enfileirou 20 frames
+UART. Os fios UART estavam desconectados e o D1 MQTT não estava ligado, portanto
+isso não comprova entrega por fio nem publicação. O ambiente
+`d1_mini_uart_mqtt_bench` foi compilado com a mesma MAC de gateway e os segredos
+locais, mas ainda precisa ser gravado no D1 MQTT antes do teste físico.
+
 #### PR 8 — integração multi-gateway no broker compartilhado
 
 - Validar pelo menos dois pares ESP-NOW/MQTT, cada par com sua própria UART e
@@ -672,9 +831,9 @@ Para a investigação da Fase 1, o repositório oferece firmwares isolados que n
 alteram nem substituem os firmwares FDRS de produção:
 
 ```bash
-pio run -e esp32dev_espnow_probe_gateway_1
-pio run -e esp32dev_espnow_probe_gateway_2
-pio run -e d1_mini_espnow_probe_receiver
+pio run -c platformio-tests.ini -e esp32dev_espnow_probe_gateway_1
+pio run -c platformio-tests.ini -e esp32dev_espnow_probe_gateway_2
+pio run -c platformio-tests.ini -e d1_mini_espnow_probe_receiver
 ```
 
 Procedimento de bancada:
@@ -727,10 +886,10 @@ FDRS; o node imprime sua MAC de fábrica e o MAC de destino configurado.
 Builds:
 
 ```bash
-pio run -e esp32dev_discovery_gateway_probe
-pio run -e esp32dev_discovery_gateway_probe_2
-pio run -e d1_mini_discovery_node_probe
-pio run -e d1_mini_discovery_node_probe_2
+pio run -c platformio-tests.ini -e esp32dev_discovery_gateway_probe
+pio run -c platformio-tests.ini -e esp32dev_discovery_gateway_probe_2
+pio run -c platformio-tests.ini -e d1_mini_discovery_node_probe
+pio run -c platformio-tests.ini -e d1_mini_discovery_node_probe_2
 ```
 
 Procedimento:
@@ -834,11 +993,11 @@ são contados. O callback copia eventos, e o loop faz a seleção e mantém peer
 Compilação e bancada:
 
 ```bash
-pio run -e esp32dev_discovery_node_experimental
-pio run -e d1_mini_discovery_node_experimental
-pio run -e esp32dev_discovery_gateway_probe
-pio run -e esp32dev_discovery_gateway_probe_2
-pio run -e esp32dev_discovery_gateway_other_network
+pio run -c platformio-tests.ini -e esp32dev_discovery_node_experimental
+pio run -c platformio-tests.ini -e d1_mini_discovery_node_experimental
+pio run -c platformio-tests.ini -e esp32dev_discovery_gateway_probe
+pio run -c platformio-tests.ini -e esp32dev_discovery_gateway_probe_2
+pio run -c platformio-tests.ini -e esp32dev_discovery_gateway_other_network
 pio test -c platformio-native.ini -e native -f test_discovery_packet
 ```
 
