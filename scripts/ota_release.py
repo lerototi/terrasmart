@@ -27,6 +27,10 @@ TARGETS = {
     "d1_mini_uart_mqtt_pilot": (0, "d1_mini_uart_mqtt_pilot.bin"),
     "d1_mini_uart_mqtt_pilot_local": (0, "d1_mini_uart_mqtt_pilot_local.bin"),
     "d1_mini_uart_mqtt_bench": (0, "d1_mini_uart_mqtt_bench.bin"),
+    "esp32dev_data_uart_bench": (1, "esp32dev_data_uart_bench.bin"),
+    "esp32dev_data_uart_pilot": (1, "esp32dev_data_uart_pilot.bin"),
+    "esp32dev_data_uart_fast_bench": (1, "esp32dev_data_uart_fast_bench.bin"),
+    "esp32dev_uart_mqtt_fast_bench": (0, "esp32dev_uart_mqtt_fast_bench.bin"),
 }
 PILOT_ENVS = {
     "esp32dev_uart_mqtt_pilot_local": "platformio.ini",
@@ -34,6 +38,10 @@ PILOT_ENVS = {
     "d1_mini_uart_mqtt_pilot": "platformio-tests.ini",
     "d1_mini_uart_mqtt_pilot_local": "platformio-tests.ini",
     "d1_mini_uart_mqtt_bench": "platformio-tests.ini",
+    "esp32dev_data_uart_bench": "platformio.ini",
+    "esp32dev_data_uart_pilot": "platformio-tests.ini",
+    "esp32dev_data_uart_fast_bench": "platformio.ini",
+    "esp32dev_uart_mqtt_fast_bench": "platformio.ini",
 }
 PILOT_OTA_TOPIC = "terrasmart/pilot/ota"
 FORWARDED_IMAGE_LIMITS = {

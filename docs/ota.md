@@ -5,7 +5,8 @@
 O piloto `uart_mqtt_pilot.cpp` para ESP32 e ESP8266 reutiliza o download,
 validação e gravação OTA local de produção, com tópico isolado
 `terrasmart/pilot/ota`. O comando exige o `gateway_id` exato mostrado no portal
-e `target: 0`; outros targets são rejeitados. O piloto não assina
+e `target: 0` para o MQTT ou `target: 1` para o gateway de rádio do par;
+outros targets são rejeitados. O piloto não assina
 `terrasmart/ota`, e os firmwares atuais de produção usam esse tópico de produção,
 não o tópico piloto. Confirmar também as assinaturas de firmwares antigos antes
 de operar ambos no mesmo broker. A identidade é da placa física e pode ser a
@@ -40,8 +41,9 @@ O ESP32 piloto usa a tabela padrão do ambiente, com dois slots OTA de 1.280 KiB
 Antes da primeira OTA, conferir a tabela gravada e a partição ativa; se forem
 incompatíveis, preparar a migração por USB preservando NVS e dados existentes.
 O ESP8266 usa o layout do ambiente existente e mantém a configuração piloto no
-slot EEPROM documentado no README. Os outros ambientes piloto de descoberta e
-de rádio não ganham OTA com esta etapa.
+slot EEPROM documentado no README. Os ambientes piloto de descoberta
+não ganham OTA com esta etapa. O OTA do gateway de rádio é
+descrito na próxima seção.
 
 **Verificação de código:** compilaram o piloto MQTT ESP32 e ESP8266, os gateways
 de produção de ambas plataformas e os ambientes de node afetados; os testes
@@ -65,8 +67,183 @@ mesma imagem, não uma mudança de versão.
 
 Ainda faltam bancada do piloto ESP8266 e prova física de isolamento com um
 gateway de produção conectado; também não foi enviado comando ao tópico global
-de produção nessa bancada. O encaminhamento OTA ao gateway de rádio e aos nodes
-permanece para outra etapa.
+de produção nessa bancada. O OTA dos nodes permanece para outra etapa.
+
+## OTA do gateway de rádio piloto
+
+Os ambientes `esp32dev_data_uart_bench` e `esp32dev_data_uart_pilot` passam a
+receber pela UART o protocolo OTA já usado em produção (`!TSOTA:`), em blocos
+de até 180 bytes com ACK e até cinco tentativas. O front-end MQTT e o rádio
+precisam estar atualizados com esta versão. O comando é publicado em
+`terrasmart/pilot/ota`, com `gateway_id` do front-end e `target: 1`; targets
+de nodes permanecem rejeitados. Exemplo para preparar o binário de bancada:
+
+```bash
+python3 scripts/ota_release.py --env esp32dev_data_uart_bench \
+  --gateway-id gw-383E51D3E374 --www-dir /caminho/montado/config/www \
+  --base-url http://IP_DO_SERVIDOR:8123
+```
+
+O script compila, copia e mostra o JSON; `--publish` efetua a publicação. O
+ambiente de rádio incorpora a MAC de bancada; configurar a identidade correta
+antes da compilação e assegurar que a imagem corresponde à placa de destino.
+No primeiro uso gravar por USB o firmware de rádio com OTA e verificar que a
+tabela existente possui slots OTA adequados. A tabela padrão dos ambientes
+piloto tem dois slots de 1.280 KiB; manter o layout existente ou fazer migração
+planejada com backup de dados. Não substituir automaticamente a tabela por
+`partitions_ota.csv`, que altera offsets e tamanhos das partições de aplicação
+e dados. Também é preciso instalar o novo firmware MQTT piloto.
+
+A UART usa um único leitor em cada extremo, com linhas `!TS1:` de telemetria,
+`!TSOTA:` de OTA e sondagem `!TSPROBE:<nonce>` / resposta
+`!TSREADY:<nonce>:<MAC>`. Antes de enviar dados OTA, o MQTT exige resposta
+recente com a MAC de rádio configurada. Essa verificação identifica o par, mas
+não autentica a placa; MAC, nonce e CRC não são credenciais. A transferência
+pausa a publicação, descarta novas leituras e usa fila RAM como no OTA local;
+o rádio descarta leituras enquanto grava e aborta uma sessão inativa após 60 s.
+O contador `ota_drops` indica leituras descartadas no rádio; outras perdas podem
+ocorrer antes da sessão iniciar ou durante reboot. Se o ACK final se perder,
+o resultado é incerto: a imagem pode ter sido instalada mesmo com falha no
+remetente. Verificar o boot/telemetria antes de repetir. No ESP8266, a UART
+SoftwareSerial e sua operação cooperativa ainda exigem validação física.
+
+**Bancada OTA do rádio, 18/11/2026:** gateway MQTT ESP32 `gw-383E51D3E374`
+em `/dev/ttyUSB0`, rádio `D4:E9:F4:02:E5:EC` em `/dev/ttyUSB1` e node D1
+`EC:FA:BC:D4:E7:33` em `/dev/ttyUSB2`, com UART física cruzada. O MQTT recebeu
+por OTA a versão que encaminha ao rádio. A tabela existente do rádio foi lida:
+dois slots OTA de 1.280 KiB; o firmware inicial foi gravado por USB com hashes
+verificados. Abrir as portas seriais reiniciou ambos os ESP32 antes do ensaio.
+
+No primeiro teste, o servidor HTTP interrompeu o download após 540 bytes de
+uma imagem de 770.448 bytes. O MQTT verificou a identidade do rádio, reportou
+timeout e falha do OTA e retomou a publicação; um assinante independente voltou
+a receber telemetria. Na segunda tentativa, a imagem completa foi transmitida
+em aproximadamente 1.871 segundos (31 minutos) a 9600 baud; o rádio confirmou
+conclusão, reiniciou e o MQTT reportou `OTA target 1: complete`. O assinante
+recebeu leituras novamente após o reboot. O relatório do rádio antes do reboot
+registrou 939 leituras descartadas durante OTA; o MQTT registrou cinco rejeições
+de framing ao longo dos testes, sem atribuição de causa. A leitura posterior de
+`otadata` mostrou sequência 2 no segundo slot e reiniciou o rádio novamente.
+O portal confirmou MQTT e Wi-Fi conectados. O ensaio atualizou para a mesma
+imagem; não demonstrou uma mudança de versão.
+
+Os builds dos pilotos MQTT ESP32/ESP8266, do rádio ESP32 e dos gateways de
+produção compilaram; testes nativos exercitam enquadramento e ressincronização.
+Ainda faltam testes físicos de MAC incorreta, CRC errado no encaminhamento e
+front-end ESP8266, além da investigação das rejeições de framing. Não interpretar
+esse ensaio isolado como validação dos protocolos legados ou de OTA para nodes.
+
+## Plano incremental: OTA confiável e disponibilidade
+
+Premissa: priorizar integridade e entrega de dados. A meta preferencial é OTA
+em menos de cinco minutos, mas uma transferência comprovadamente mais confiável
+pode levar mais tempo. Medir separadamente a duração total da atualização e a
+interrupção de telemetria; velocidade não demonstra disponibilidade.
+
+1. **Baseline e diagnóstico:** medir sequências na origem, no rádio e em um
+   assinante MQTT independente; investigar as cinco rejeições de framing do
+   ensaio anterior. Registrar tentativas, erros, filas, latência e perdas.
+   Aceitação: resultados reproduzíveis e rejeições explicadas ou isoladas.
+2. **UART mais rápida no piloto ESP32:** testar 115200 baud mantendo o protocolo
+   OTA existente, confirmações e retransmissões. Adotar somente após testar
+   integridade, interrupção, reboot, perdas e estabilidade em bancada; prever
+   migração coordenada de ambos os extremos e recuperação por USB. Os ambientes
+   existentes continuam em 9600 até uma decisão fundamentada. ESP8266 com
+   SoftwareSerial exige testes físicos próprios antes de qualquer migração.
+3. **Telemetria durante OTA:** atender dados e comandos entre blocos OTA com
+   um único leitor UART; medir efeito das escritas em flash, filas, latência,
+   perda e concorrência sob carga e falha. Reboot deve ser medido separadamente.
+   A política de recuperação garantida de leituras após falhas ainda requer
+   definição; as filas atuais em RAM e QoS 0 não oferecem essa garantia.
+4. **Failover:** integrar descoberta ao transporte de dados do piloto e validar
+   troca de gateway durante reboot, incluindo perdas, duplicatas e estabilidade
+   após retorno. A descoberta experimental atual é separada do transporte fixo.
+5. **Otimização adicional:** avaliar framing binário versionado apenas se os
+   resultados justificarem; testar corrupção, retransmissão, ressincronização e
+   migração sem quebrar os protocolos anteriores.
+
+Cada etapa exige builds ESP32/ESP8266 afetados e evidências físicas registradas
+separadamente. Não promover a produção com base somente em compilação ou num
+único ensaio; definir volume, duração, carga e limite de perda antes da aceitação.
+
+**Primeiros ensaios, 18/11/2026:** a 9600 baud, durante 85 segundos e após
+reinicialização dos monitores seriais, assinante independente recebeu 42
+sequências consecutivas 2–43 (`boot_id=1788948853`); rádio e MQTT reportaram
+zero rejeições e descartes no período. O primeiro envio do node falhou durante
+inicialização simultânea. Os novos contadores `uart_bad_data`, `uart_unknown`
+e `uart_overflow` distinguem categorias de erro sem substituir
+`framing_rejected`. Em uma interrupção simulada após 540 bytes de download OTA,
+o envio abortou, a telemetria retornou e esses contadores permaneceram zero.
+Isto não reproduz nem explica as cinco rejeições da transferência completa
+anterior; investigar também em um novo ensaio completo.
+
+Foram criados os ambientes **experimentais** `esp32dev_data_uart_fast_bench`
+e `esp32dev_uart_mqtt_fast_bench` a 115200 baud. Ambos compilaram, assim como o
+piloto MQTT ESP8266 com a taxa padrão de 9600; testes nativos e Python passaram.
+Duas tentativas de gravar o rádio por USB falharam na sincronização do
+bootloader antes da escrita. O firmware anterior de 9600 continuou recebendo e
+encaminhando leituras; o MQTT não foi trocado para 115200. Repetir com a UART
+entre as placas temporariamente desconectada, depois conectar novamente e
+gravar também o MQTT rápido antes do teste ponta a ponta. Os dois lados precisam
+usar a mesma taxa. Para retorno, regravar ambos os ambientes de bancada originais
+a 9600. A mudança de baud não muda configurações persistidas nem o protocolo,
+mas versões em velocidades diferentes não se comunicam. Ainda não há resultado
+de OTA a 115200 nem evidência para considerá-lo estável.
+
+**Tentativa com RX/TX desconectados:** o usuário desconectou os fios entre os
+gateways, mas o upload em `/dev/ttyUSB1` voltou a falhar na sincronização do
+bootloader antes da escrita. `esptool read_mac` também reportou ausência de
+resposta de sincronização. Após reabrir a serial, o firmware anterior de rádio
+inicializou e recebeu leituras do D1, confirmando o funcionamento da aplicação;
+isso não comprova o caminho USB de transmissão para o bootloader. O gateway MQTT
+não foi regravado, e a UART física entre os dois permanece desconectada para o
+próximo ensaio de gravação. Testar entrada manual em modo bootloader e verificar
+cabo/porta USB se necessário.
+
+**Nova tentativa manual:** a gravação de `esp32dev_data_uart_fast_bench` em
+`/dev/ttyUSB1` voltou a falhar na sincronização, antes da escrita. A saída
+reportou modo de download detectado, mas sem resposta de sincronização; não foi
+possível confirmar se BOOT estava pressionado durante essa tentativa. O gateway
+MQTT não foi regravado e o teste de 115200 baud continua pendente.
+
+**Primeira bancada a 115200 baud:** o usuário gravou os dois ambientes rápidos
+e configurou a rede no portal. Os gateways voltaram a publicar leituras do D1;
+relatórios observaram zero rejeições UART antes do ensaio. Uma interrupção
+proposital após 540 bytes de download abortou e retomou a telemetria, com zero
+rejeições registradas nos novos contadores. A primeira transferência completa
+falhou com timeout HTTP após 256.976 de 770.528 bytes; a telemetria retomou.
+Uma segunda tentativa completa não terminou após 600 segundos e foi interrompida
+quando o servidor de teste encerrou; outra observação durou 230 segundos sem
+conclusão e também foi interrompida. Não houve sucesso nessas tentativas
+iniciais; a causa foi isolada depois em ensaio instrumentado (abaixo). A abertura
+das seriais reiniciou as placas e a telemetria voltou. O teste rápido permanece
+restrito à bancada até a decisão de promoção.
+
+**Diagnóstico instrumentado e correções:** o ensaio com log de todas as linhas e
+progresso HTTP mostrou que a transferência completa concluía em ~626 s, mas o
+gateway não registrava a conclusão: o eco da própria linha OTA (387 bytes)
+estourava o buffer RX UART padrão de 256 bytes enquanto `flush()` segurava o
+mutex, descartando ACKs e gerando retries de 5 s. A correção
+`pilotUart.setRxBufferSize(1024)` no gateway MQTT reduziu a transferência para
+~223 s (3,7 min) no ensaio seguinte. Para absorver stalls transitórios de
+TCP/Wi-Fi observados na bancada (a janela de recepção fecha enquanto o gateway
+aguarda ACK e uma atualização de janela perdida pode atrasar o servidor por mais
+de 10 s), a janela de leitura HTTP do OTA foi elevada de 10 s para 30 s e o
+Wi-Fi do gateway piloto passou a operar sem modem sleep
+(`WiFi.setSleep(false)`).
+
+**Resultado final a 115200:** com o firmware corrigido, a interrupção proposital
+após 540 bytes abortou em 30,4 s e retomou a telemetria (seq 9888), com zero
+rejeições. Na sequência, a transferência completa de 770.528 bytes terminou em
+242,4 s (~4 min), com `OTA target 1: complete`, telemetria retomada
+(seq 10011), `uart_unknown=0`, `framing_rejected=0` e `uart_overflow=0`. Um
+ensaio completo anterior nas mesmas condições levou 273,4 s e também retomou a
+telemetria. As duas execuções ficaram abaixo da meta de 5 min e o par ESP32 a
+115200 foi promovido à configuração validada do piloto em bancada; o padrão 9600
+permanece para o ESP8266 e para o par de rollback, e a validação de campo ainda é
+necessária antes de qualquer promoção em produção. O console USB do gateway
+ocasionalmente corrompe o prefixo de uma linha de status (ex.:
+`�A target 1: complete`), sem afetar a transferência nem a telemetria.
 
 ## Topologia
 
@@ -87,7 +264,8 @@ mantém o leitor serial genérico do FDRS pausado até o ACK do `End` ou `Abort`
 enquanto os serviços UART OTA e ESP-NOW continuam ativos.
 
 O fluxo está integrado e compila para os gateways e nós configurados; a
-transferência completa por rádio ainda precisa ser confirmada em bancada.
+transferência completa por rádio foi confirmada na bancada a 9600 baud e a
+115200 baud com as correções descritas acima.
 
 ## Preparação
 

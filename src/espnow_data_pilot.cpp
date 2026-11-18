@@ -4,6 +4,12 @@
 #include "terrasmart_discovery_packet.h"
 #if defined(TERRASMART_PILOT_UART_BRIDGE)
 #include "terrasmart_uart_v1.h"
+#if defined(ESPNOW_DATA_PILOT_GATEWAY)
+#define TERRASMART_OTA_ESPNOW_GATEWAY
+#define FDRS_ESPNOW_CHANNEL 1
+#include "terrasmart_ota.h"
+#include "terrasmart_pilot_uart_lines.h"
+#endif
 #endif
 #include <fdrs_datatypes.h>
 
@@ -78,6 +84,51 @@ uint32_t drops = 0, invalidLength = 0, accepted = 0, invalid = 0;
 #if defined(TERRASMART_PILOT_UART_BRIDGE)
 HardwareSerial pilotUart(1);
 uint32_t uartForwarded = 0, uartDrops = 0;
+uint32_t otaLastActivity = 0, otaTelemetryDrops = 0;
+terrasSmartPilotUart::Parser otaLines;
+
+void servicePilotOta() {
+  unsigned count = 0;
+  while (count++ < 512 && pilotUart.available()) {
+    auto kind = otaLines.feed(static_cast<char>(pilotUart.read()), millis());
+    if (kind == terrasSmartPilotUart::Kind::PROBE) {
+      unsigned long nonce;
+      char extra;
+      if (sscanf(otaLines.line(), "!TSPROBE:%8lx%c", &nonce, &extra) == 2 && extra == '\n') {
+        pilotUart.printf("!TSREADY:%08lX:%02X%02X%02X%02X%02X%02X\n", nonce,
+                         ownMac[0], ownMac[1], ownMac[2], ownMac[3], ownMac[4], ownMac[5]);
+        pilotUart.flush();
+      }
+    } else if (kind == terrasSmartPilotUart::Kind::OTA) {
+      TerraSmartOta::Packet packet;
+      if (!TerraSmartOta::fromUartLine(String(otaLines.line()), packet) ||
+          packet.target != TERRASMART_OTA_GATEWAY_ID || packet.type == TerraSmartOta::Type::Ack) continue;
+      otaLastActivity = millis();
+      uint32_t requestedSize = 0;
+      if (packet.type == TerraSmartOta::Type::Begin && packet.size == sizeof(requestedSize))
+        memcpy(&requestedSize, packet.payload, sizeof(requestedSize));
+      const uint8_t status = packet.type == TerraSmartOta::Type::Begin &&
+          (packet.size != sizeof(requestedSize) || !requestedSize || requestedSize > TERRASMART_OTA_GATEWAY_FORWARD_LIMIT)
+          ? TerraSmartOta::STATUS_BAD_PACKET : packet.type == TerraSmartOta::Type::Begin &&
+          packet.size == sizeof(uint32_t) && TerraSmartOta::updaterStarted &&
+          packet.sequence + 1 == TerraSmartOta::nextSequence &&
+          !memcmp(packet.payload, &TerraSmartOta::expectedSize, sizeof(uint32_t))
+          ? TerraSmartOta::STATUS_OK : TerraSmartOta::processUpdatePacket(packet);
+      pilotUart.println(TerraSmartOta::toUartLine(TerraSmartOta::makePacket(
+          TerraSmartOta::Type::Ack, packet.target, packet.sequence, &status, 1)));
+      pilotUart.flush();
+      if (packet.type == TerraSmartOta::Type::End && status == TerraSmartOta::STATUS_OK) {
+        Serial.println("Pilot radio OTA complete; restarting"); Serial.flush();
+        delay(100); ESP.restart();
+      }
+    }
+  }
+  otaLines.expire(millis());
+  if (TerraSmartOta::updaterStarted && millis() - otaLastActivity >= 60000) {
+    TERRASMART_OTA_ABORT(); TerraSmartOta::updaterStarted = false;
+    Serial.println("Pilot radio OTA timed out; telemetry resumed");
+  }
+}
 #endif
 portMUX_TYPE queueLock = portMUX_INITIALIZER_UNLOCKED;
 void onReceived(const uint8_t *mac, const uint8_t *data, int length) {
@@ -110,6 +161,7 @@ void processEvents() {
     reading.id = frame.reading.id; reading.t = frame.reading.type; reading.d = frame.reading.data;
     ++accepted;
 #if defined(TERRASMART_PILOT_UART_BRIDGE)
+    if (TerraSmartOta::updaterStarted) { ++otaTelemetryDrops; continue; }
     uint8_t payload[terras_smart_uart_v1::PAYLOAD_SIZE];
     memcpy(payload, ownMac, 6);
     memcpy(payload + 6, event.wire, FRAME_SIZE);
@@ -170,7 +222,9 @@ void setup() {
   Serial.print("Boot ID: "); Serial.println(bootId);
 #else
   #if defined(TERRASMART_PILOT_UART_BRIDGE)
-  pilotUart.begin(9600, SERIAL_8N1, 16, 17);
+  pilotUart.setRxBufferSize(1024);
+  pilotUart.begin(TERRASMART_PILOT_UART_BAUD, SERIAL_8N1, 16, 17);
+  Serial.printf("Pilot UART baud: %lu\n", static_cast<unsigned long>(TERRASMART_PILOT_UART_BAUD));
   #endif
   esp_err_t result = esp_wifi_get_mac(WIFI_IF_STA, ownMac);
   if (result != ESP_OK) {
@@ -218,6 +272,9 @@ void loop() {
     Serial.print(" queue_errors="); Serial.println(queueErrors);
   }
 #else
+#if defined(TERRASMART_PILOT_UART_BRIDGE)
+  servicePilotOta();
+#endif
   processEvents();
   if (now - lastReport >= 5000) {
     lastReport = now;
@@ -230,6 +287,7 @@ void loop() {
 #if defined(TERRASMART_PILOT_UART_BRIDGE)
     Serial.print(" uart_forwarded="); Serial.print(uartForwarded);
     Serial.print(" uart_drops="); Serial.print(uartDrops);
+    Serial.print(" ota_drops="); Serial.print(otaTelemetryDrops);
 #endif
     Serial.println();
   }

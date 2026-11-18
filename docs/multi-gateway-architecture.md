@@ -606,8 +606,8 @@ leituras (descarta novas quando cheia) e cache de 16 mensagens já publicadas,
 identificadas por origem, boot e sequência. Não há persistência da fila/cache,
 ACK UART de aplicação ou confirmação de entrega MQTT além do resultado QoS 0
 do cliente. O piloto publica somente `/v1`, rejeita valores não finitos e não
-implementa o caminho legado. O OTA local do MQTT foi adicionado posteriormente;
-o gateway de rádio e os nodes pilotos ainda não têm OTA. Credenciais locais podem ser colocadas em
+implementa o caminho legado. O OTA dos gateways pilotos foi adicionado depois;
+os nodes pilotos ainda não têm OTA. Credenciais locais podem ser colocadas em
 `include/terrasmart_pilot_secrets.h`, ignorado pelo Git, com `PILOT_WIFI_SSID`,
 `PILOT_WIFI_PASSWORD`, `PILOT_MQTT_HOST`, `PILOT_MQTT_PORT`, `PILOT_MQTT_USER`
 e `PILOT_MQTT_PASSWORD`. O build de teste USB pode usar os segredos locais já
@@ -845,6 +845,9 @@ foram transmitidas durante a reinicialização. O resultado demonstra que a fila
 anterior não foi recuperada, coerente com a ausência de persistência e ACK UART.
 
 #### PR 8 — integração multi-gateway no broker compartilhado
+
+Para a evolução incremental de OTA com disponibilidade de telemetria e failover,
+consulte [o plano de confiabilidade OTA](ota.md#plano-incremental-ota-confiável-e-disponibilidade).
 
 - Validar pelo menos dois pares ESP-NOW/MQTT, cada par com sua própria UART e
   gateway MQTT conectado ao mesmo broker.

@@ -7,7 +7,7 @@ class PilotOtaReleaseTest(unittest.TestCase):
     def test_pilots_never_use_configured_production_topic(self):
         for env in PILOT_ENVS:
             with self.subTest(env=env):
-                self.assertEqual(TARGETS[env][0], 0)
+                self.assertEqual(TARGETS[env][0], 1 if "data_uart" in env else 0)
                 self.assertEqual(ota_topic(env, {"mqtt_topic": "terrasmart/ota"}),
                                  "terrasmart/pilot/ota")
 
