@@ -3,11 +3,16 @@
 #include <Arduino.h>
 #include "terrasmart_ota_protocol.h"
 #include "terrasmart_ota_config.h"
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
 #include "terrasmart_pilot_ota.h"
 static_assert(TERRASMART_OTA_MQTT_DEVICE_ID == terrasSmartPilotOta::LOCAL_TARGET,
               "Pilot OTA target must match the local MQTT gateway");
 void terrasSmartPilotOtaPauseTelemetry(bool paused);
+bool terrasSmartPilotOtaVerifyRadio();
+void terrasSmartPilotOtaWriteUart(const String &line);
+void terrasSmartPilotOtaClearAck();
+bool terrasSmartPilotOtaTakeAck(uint8_t target, uint16_t sequence, uint8_t &status);
+void terrasSmartPilotOtaServiceUart();
 #endif
 
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY) || defined(TERRASMART_OTA_MQTT)
@@ -426,7 +431,9 @@ inline bool consumeUartAck(const String &line) {
 }
 
 inline void writeUartLine(const String &line) {
-#if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
+#if defined(TERRASMART_PILOT_OTA)
+  terrasSmartPilotOtaWriteUart(line);
+#elif defined(ESP32_MQTT_GATEWAY_FIRMWARE)
   Serial1.println(line);
   Serial1.flush();
 #else
@@ -438,6 +445,11 @@ inline void writeUartLine(const String &line) {
 inline bool waitForAck(uint8_t target, uint16_t sequence) {
   const uint32_t started = millis();
   while (millis() - started < UART_TIMEOUT_MS) {
+#if defined(TERRASMART_PILOT_OTA)
+    terrasSmartPilotOtaServiceUart();
+    uint8_t status;
+    if (terrasSmartPilotOtaTakeAck(target, sequence, status)) return status == STATUS_OK;
+#else
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
     Stream &uart = Serial1;
 #else
@@ -464,6 +476,7 @@ inline bool waitForAck(uint8_t target, uint16_t sequence) {
                       uartAck.size);
       }
     }
+#endif
     client.loop();
     delay(1);
     terrasSmartOtaServiceStatusLed();
@@ -474,6 +487,9 @@ inline bool waitForAck(uint8_t target, uint16_t sequence) {
 inline bool sendAndWait(const Packet &packet) {
   for (uint8_t attempt = 0; attempt < MAX_RETRIES; ++attempt) {
     uartAckReady = false;
+#if defined(TERRASMART_PILOT_OTA)
+    terrasSmartPilotOtaClearAck();
+#endif
     writeUartLine(toUartLine(packet));
     if (waitForAck(packet.target, packet.sequence)) return true;
   }
@@ -608,7 +624,7 @@ inline bool performUpdate(uint8_t target, const String &url,
     const size_t wanted = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
     size_t received = 0;
     const uint32_t started = millis();
-    while (received < wanted && millis() - started < 10000) {
+    while (received < wanted && millis() - started < 30000) {
       if (stream->available()) {
         received += stream->readBytes(chunk + received, wanted - received);
       } else {
@@ -658,7 +674,7 @@ inline bool handleMqttCommand(JsonDocument &doc) {
   String url;
   uint32_t size;
   uint32_t crc;
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
   if (!terrasSmartPilotOta::acceptsGateway(doc["gateway_id"].as<const char *>(),
                                            terrasSmartMqttGatewayId())) {
 #else
@@ -673,9 +689,9 @@ inline bool handleMqttCommand(JsonDocument &doc) {
     Serial.println("OTA command rejected: invalid fields, URL, size, or CRC");
     return false;
   }
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
   if (!terrasSmartPilotOta::acceptsTarget(target)) {
-    Serial.println("Pilot OTA rejected: only the local MQTT gateway is supported");
+    Serial.println("Pilot OTA rejected: unsupported target");
     return false;
   }
 #endif
@@ -684,11 +700,11 @@ inline bool handleMqttCommand(JsonDocument &doc) {
   if (target == TERRASMART_OTA_MQTT_DEVICE_ID) {
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
     updateInProgress = true;
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
     terrasSmartPilotOtaPauseTelemetry(true);
 #endif
     const bool result = performGatewayUpdate(url, size, crc);
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
     terrasSmartPilotOtaPauseTelemetry(false);
 #endif
     updateInProgress = false;
@@ -696,11 +712,11 @@ inline bool handleMqttCommand(JsonDocument &doc) {
     return result;
 #elif defined(ESP8266)
     updateInProgress = true;
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
     terrasSmartPilotOtaPauseTelemetry(true);
 #endif
     const bool result = performGatewayUpdate(url, size, crc);
-#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#if defined(TERRASMART_PILOT_OTA)
     terrasSmartPilotOtaPauseTelemetry(false);
 #endif
     updateInProgress = false;
@@ -709,7 +725,14 @@ inline bool handleMqttCommand(JsonDocument &doc) {
 #endif
   }
   updateInProgress = true;
+#if defined(TERRASMART_PILOT_OTA)
+  terrasSmartPilotOtaPauseTelemetry(true);
+  const bool radioReady = terrasSmartPilotOtaVerifyRadio();
+  const bool result = radioReady && performUpdate(target, url, size, crc);
+  terrasSmartPilotOtaPauseTelemetry(false);
+#else
   const bool result = performUpdate(target, url, size, crc);
+#endif
   updateInProgress = false;
   Serial.printf("OTA target %u: %s\n", target, result ? "complete" : "failed");
   return result;
@@ -745,7 +768,7 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
     const size_t wanted = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
     size_t received = 0;
     const uint32_t started = millis();
-    while (received < wanted && millis() - started < 10000) {
+    while (received < wanted && millis() - started < 30000) {
       if (stream->available()) {
         received += stream->readBytes(buffer + received, wanted - received);
       } else {
@@ -803,7 +826,7 @@ inline bool performGatewayUpdate(const String &url, uint32_t size,
     const size_t wanted = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
     size_t received = 0;
     const uint32_t started = millis();
-    while (received < wanted && millis() - started < 10000) {
+    while (received < wanted && millis() - started < 30000) {
       if (stream->available()) received += stream->readBytes(buffer + received, wanted - received);
       else delay(1);
       client.loop();

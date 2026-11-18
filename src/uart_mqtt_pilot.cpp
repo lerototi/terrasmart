@@ -16,6 +16,7 @@
 #include "terrasmart_discovery_packet.h"
 #include "terrasmart_mqtt_identity.h"
 #include "terrasmart_pilot_ota.h"
+#include "terrasmart_pilot_uart_lines.h"
 
 // Credentials are local build inputs; pilot configuration remains isolated.
 #if __has_include("terrasmart_pilot_secrets.h")
@@ -49,7 +50,7 @@
 #endif
 #define TERRASMART_PILOT_PORTAL
 #define TERRASMART_OTA_MQTT
-#define TERRASMART_PILOT_OTA_LOCAL_ONLY
+#define TERRASMART_PILOT_OTA
 #ifndef WIFI_SSID
 #define WIFI_SSID PILOT_WIFI_SSID
 #define WIFI_PASS PILOT_WIFI_PASSWORD
@@ -91,6 +92,7 @@ Item queue[QUEUE_SIZE];
 uint8_t head = 0, tail = 0;
 uint32_t dropped = 0, invalid = 0, framingRejected = 0, duplicate = 0, published = 0;
 uint32_t uartBytes = 0, uartMarkers = 0;
+uint32_t uartBadTelemetry = 0, uartUnknown = 0, uartOverflow = 0;
 uint32_t otaDiscarded = 0;
 bool telemetryPaused = false;
 bool otaSubscribed = false;
@@ -117,9 +119,13 @@ HardwareSerial &pilotUart = Serial;
 #elif defined(ESP32)
 HardwareSerial pilotUart(1); // RX GPIO16, TX GPIO17
 #else
-SoftwareSerial pilotUart(D6, D7); // RX GPIO12, TX GPIO13
+  SoftwareSerial pilotUart(D6, D7); // RX GPIO12, TX GPIO13
 #endif
-terras_smart_uart_v1::Parser parser;
+terrasSmartPilotUart::Parser parser;
+TerraSmartOta::Packet pilotAck = {};
+bool pilotAckReady = false;
+uint32_t expectedProbe = 0;
+bool probeReady = false;
 
 // Limited recent-message cache: records only after successful publish.
 struct Key { bool used; uint8_t source[6]; uint32_t boot, seq; };
@@ -164,10 +170,28 @@ void readUart() {
     ++uartBytes;
     if (byte == '!') ++uartMarkers;
     unlockQueue();
-    auto result = parser.feedResult(byte, millis(), payload);
-    if (result == terras_smart_uart_v1::Parser::Result::FRAME) receivePayload(payload);
-    else if (result == terras_smart_uart_v1::Parser::Result::REJECTED) {
-      lockQueue(); ++framingRejected; unlockQueue();
+    auto result = parser.feed(byte, millis());
+    if (result == terrasSmartPilotUart::Kind::TELEMETRY) {
+      if (terras_smart_uart_v1::decode(parser.line(), parser.size(), payload)) receivePayload(payload);
+      else { lockQueue(); ++framingRejected; ++uartBadTelemetry; unlockQueue(); }
+    } else if (result == terrasSmartPilotUart::Kind::OTA) {
+      TerraSmartOta::Packet packet;
+      if (TerraSmartOta::fromUartLine(String(parser.line()), packet) && packet.type == TerraSmartOta::Type::Ack) {
+        lockQueue(); pilotAck = packet; pilotAckReady = true; unlockQueue();
+      }
+    } else if (result == terrasSmartPilotUart::Kind::READY) {
+      unsigned long nonce; unsigned mac[6]; char end;
+      if (sscanf(parser.line(), "!TSREADY:%8lx:%2x%2x%2x%2x%2x%2x%c", &nonce,
+                 &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5], &end) == 8 && end == '\n') {
+        bool matches = true;
+        for (unsigned i = 0; i < 6; ++i) matches = matches && mac[i] == expectedRadioMac[i];
+        lockQueue(); if (matches && nonce == expectedProbe) probeReady = true; unlockQueue();
+      }
+    } else if (result == terrasSmartPilotUart::Kind::INVALID) {
+      lockQueue(); ++framingRejected;
+      if (parser.error() == terrasSmartPilotUart::Error::OVERFLOW) ++uartOverflow;
+      else ++uartUnknown;
+      unlockQueue();
     }
   }
   parser.expire(millis());
@@ -217,6 +241,48 @@ void terrasSmartPilotOtaPauseTelemetry(bool paused) {
   Serial.println(paused ? "Pilot OTA: telemetry paused" : "Pilot OTA: telemetry resumed");
 }
 
+void terrasSmartPilotOtaWriteUart(const String &line) {
+  pilotUart.println(line);
+#if defined(ESP32) || defined(PILOT_USB_UART_TEST)
+  pilotUart.flush();
+#endif
+}
+void terrasSmartPilotOtaServiceUart() {
+#if defined(ESP8266)
+  readUart();
+#endif
+}
+void terrasSmartPilotOtaClearAck() { lockQueue(); pilotAckReady = false; unlockQueue(); }
+bool terrasSmartPilotOtaTakeAck(uint8_t target, uint16_t sequence, uint8_t &status) {
+  lockQueue();
+  bool match = pilotAckReady && pilotAck.target == target && pilotAck.sequence == sequence && pilotAck.size == 1;
+  if (match) { status = pilotAck.payload[0]; pilotAckReady = false; }
+  unlockQueue(); return match;
+}
+bool terrasSmartPilotOtaVerifyRadio() {
+#if defined(ESP32)
+  const uint32_t nonce = esp_random();
+#else
+  const uint32_t nonce = ESP.random();
+#endif
+  lockQueue(); expectedProbe = nonce; probeReady = false; unlockQueue();
+  char line[32]; snprintf(line, sizeof(line), "!TSPROBE:%08lX\n", static_cast<unsigned long>(nonce));
+  for (unsigned attempt = 0; attempt < 3; ++attempt) {
+    pilotUart.print(line);
+#if defined(ESP32) || defined(PILOT_USB_UART_TEST)
+    pilotUart.flush();
+#endif
+    const uint32_t start = millis();
+    while (millis() - start < 2000) {
+      terrasSmartPilotOtaServiceUart();
+      lockQueue(); bool ready = probeReady; unlockQueue();
+      if (ready) { Serial.println("Pilot radio identity verified"); return true; }
+      client.loop(); delay(1);
+    }
+  }
+  Serial.println("Pilot radio identity check failed"); return false;
+}
+
 void pilotMqttCallback(char *topic, uint8_t *payload, unsigned int length) {
   if (!terrasSmartPilotOta::acceptsTopic(topic)) return;
   if (terrasSmartOtaUpdateInProgress() || pendingOtaLength ||
@@ -255,11 +321,15 @@ void setup() {
 #endif
 #if !defined(PILOT_USB_UART_TEST)
 #if defined(ESP32)
-  pilotUart.begin(9600, SERIAL_8N1, 16, 17);
+  // A full OTA line is 387 bytes. Listeners that also receive their own TX
+  // echo must hold the line plus the ACK without dropping the ACK trailer.
+  pilotUart.setRxBufferSize(1024);
+  pilotUart.begin(TERRASMART_PILOT_UART_BAUD, SERIAL_8N1, 16, 17);
 #else
-  pilotUart.begin(9600, SWSERIAL_8N1, D6, D7, false, 128);
+  pilotUart.begin(TERRASMART_PILOT_UART_BAUD, SWSERIAL_8N1, D6, D7, false, 512);
 #endif
 #endif
+  Serial.printf("Pilot UART baud: %lu\n", static_cast<unsigned long>(TERRASMART_PILOT_UART_BAUD));
 #if defined(ESP32)
   uartServiceReady = xTaskCreate(uartTask, "pilot_uart", 4096, nullptr, 2, nullptr) == pdPASS;
 #else
@@ -271,6 +341,9 @@ void setup() {
   buildApIdentity(); loadConfiguration(); applyConfiguration();
   networkInitialized = true;
   WiFi.mode(WIFI_AP_STA);
+#if defined(ESP32)
+  WiFi.setSleep(false);
+#endif
   WiFi.softAP(fdrs_runtime_ap_ssid, fdrs_runtime_ap_password);
   if (runtimeConfigured && wifiSsid.length()) WiFi.begin(ssid, password);
   startWebServer();
@@ -311,13 +384,15 @@ void loop() {
     const uint32_t localPublished = published, localBytes = uartBytes, localMarkers = uartMarkers;
     const uint32_t localInvalid = invalid, localRejected = framingRejected, localDuplicate = duplicate, localDropped = dropped;
     const uint32_t localOtaDiscarded = otaDiscarded;
+    const uint32_t localBadTelemetry = uartBadTelemetry, localUnknown = uartUnknown, localOverflow = uartOverflow;
     unlockQueue();
-    Serial.printf("WiFi=%d MQTT=%d queued=%u published=%lu uart_bytes=%lu uart_markers=%lu invalid=%lu framing_rejected=%lu duplicate=%lu dropped=%lu ota_discarded=%lu\n",
+    Serial.printf("WiFi=%d MQTT=%d queued=%u published=%lu uart_bytes=%lu uart_markers=%lu invalid=%lu framing_rejected=%lu duplicate=%lu dropped=%lu ota_discarded=%lu uart_bad_data=%lu uart_unknown=%lu uart_overflow=%lu\n",
         WiFi.status() == WL_CONNECTED, mqtt.connected(), queued,
         static_cast<unsigned long>(localPublished), static_cast<unsigned long>(localBytes),
         static_cast<unsigned long>(localMarkers), static_cast<unsigned long>(localInvalid),
         static_cast<unsigned long>(localRejected), static_cast<unsigned long>(localDuplicate), static_cast<unsigned long>(localDropped),
-        static_cast<unsigned long>(localOtaDiscarded));
+        static_cast<unsigned long>(localOtaDiscarded), static_cast<unsigned long>(localBadTelemetry),
+        static_cast<unsigned long>(localUnknown), static_cast<unsigned long>(localOverflow));
   }
   delay(1);
 }
