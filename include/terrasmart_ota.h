@@ -3,6 +3,12 @@
 #include <Arduino.h>
 #include "terrasmart_ota_protocol.h"
 #include "terrasmart_ota_config.h"
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+#include "terrasmart_pilot_ota.h"
+static_assert(TERRASMART_OTA_MQTT_DEVICE_ID == terrasSmartPilotOta::LOCAL_TARGET,
+              "Pilot OTA target must match the local MQTT gateway");
+void terrasSmartPilotOtaPauseTelemetry(bool paused);
+#endif
 
 #if defined(TERRASMART_OTA_NODE) || defined(TERRASMART_OTA_ESPNOW_GATEWAY) || defined(TERRASMART_OTA_MQTT)
 #if defined(ESP8266)
@@ -652,8 +658,13 @@ inline bool handleMqttCommand(JsonDocument &doc) {
   String url;
   uint32_t size;
   uint32_t crc;
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+  if (!terrasSmartPilotOta::acceptsGateway(doc["gateway_id"].as<const char *>(),
+                                           terrasSmartMqttGatewayId())) {
+#else
   if (!doc["gateway_id"].is<const char *>() ||
       doc["gateway_id"].as<String>() != String(terrasSmartMqttGatewayId())) {
+#endif
     Serial.printf("OTA MQTT command ignored by gateway_id=%s\n",
                   terrasSmartMqttGatewayId());
     return false;
@@ -662,18 +673,36 @@ inline bool handleMqttCommand(JsonDocument &doc) {
     Serial.println("OTA command rejected: invalid fields, URL, size, or CRC");
     return false;
   }
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+  if (!terrasSmartPilotOta::acceptsTarget(target)) {
+    Serial.println("Pilot OTA rejected: only the local MQTT gateway is supported");
+    return false;
+  }
+#endif
   Serial.printf("OTA MQTT command accepted: target=%u size=%lu url=%s\n", target,
                 static_cast<unsigned long>(size), url.c_str());
   if (target == TERRASMART_OTA_MQTT_DEVICE_ID) {
 #if defined(ESP32_MQTT_GATEWAY_FIRMWARE)
     updateInProgress = true;
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+    terrasSmartPilotOtaPauseTelemetry(true);
+#endif
     const bool result = performGatewayUpdate(url, size, crc);
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+    terrasSmartPilotOtaPauseTelemetry(false);
+#endif
     updateInProgress = false;
     if (!result) Serial.println("OTA MQTT gateway update failed");
     return result;
 #elif defined(ESP8266)
     updateInProgress = true;
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+    terrasSmartPilotOtaPauseTelemetry(true);
+#endif
     const bool result = performGatewayUpdate(url, size, crc);
+#if defined(TERRASMART_PILOT_OTA_LOCAL_ONLY)
+    terrasSmartPilotOtaPauseTelemetry(false);
+#endif
     updateInProgress = false;
     if (!result) Serial.println("OTA MQTT gateway update failed");
     return result;

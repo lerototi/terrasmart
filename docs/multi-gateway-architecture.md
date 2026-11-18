@@ -606,7 +606,8 @@ leituras (descarta novas quando cheia) e cache de 16 mensagens já publicadas,
 identificadas por origem, boot e sequência. Não há persistência da fila/cache,
 ACK UART de aplicação ou confirmação de entrega MQTT além do resultado QoS 0
 do cliente. O piloto publica somente `/v1`, rejeita valores não finitos e não
-implementa o caminho legado nem OTA. Credenciais locais podem ser colocadas em
+implementa o caminho legado. O OTA local do MQTT foi adicionado posteriormente;
+o gateway de rádio e os nodes pilotos ainda não têm OTA. Credenciais locais podem ser colocadas em
 `include/terrasmart_pilot_secrets.h`, ignorado pelo Git, com `PILOT_WIFI_SSID`,
 `PILOT_WIFI_PASSWORD`, `PILOT_MQTT_HOST`, `PILOT_MQTT_PORT`, `PILOT_MQTT_USER`
 e `PILOT_MQTT_PASSWORD`. O build de teste USB pode usar os segredos locais já
@@ -653,8 +654,9 @@ produção que carregam apenas 512 bytes podem apagar o slot do piloto ao salvar
 ou redefinir; um registro já apagado precisa ser configurado novamente. O node
 experimental de descoberta ESP8266 usa `EEPROM.begin(64)` e grava no início da
 mesma EEPROM emulada, podendo sobrescrever esses registros ao trocar de firmware.
-O piloto não implementa
-comandos FDRS ou OTA, mesmo utilizando a página e o status comuns.
+O piloto usa a página e o status comuns, mas não implementa comandos FDRS.
+A etapa posterior de OTA local do front-end MQTT está descrita em
+[ota.md](ota.md#ota-local-do-gateway-mqtt-piloto).
 
 **Bancada do portal compartilhado:** no ESP32 `38:3E:51:D3:E3:74`, o AP
 `TerraSmart-Setup-3E38` foi detectado; a página, `/api/status` e a varredura
@@ -773,6 +775,74 @@ UART. Os fios UART estavam desconectados e o D1 MQTT não estava ligado, portant
 isso não comprova entrega por fio nem publicação. O ambiente
 `d1_mini_uart_mqtt_bench` foi compilado com a mesma MAC de gateway e os segredos
 locais, mas ainda precisa ser gravado no D1 MQTT antes do teste físico.
+
+**Bancada ponta a ponta com node D1 mini, 17/11/2026:** o D1 mini
+`EC:FA:BC:D4:E7:33` em `/dev/ttyUSB2` foi gravado com
+`d1_mini_data_v1_bench_node`; a gravação e o hash foram verificados. O gateway
+de rádio `D4:E9:F4:02:E5:EC` em `/dev/ttyUSB1` e o gateway MQTT
+`38:3E:51:D3:E3:74` em `/dev/ttyUSB0` executaram os pilotos existentes. Após
+reinicialização simultânea ao abrir os monitores, a primeira transmissão do node
+falhou; as sequências 2–13 foram aceitas e publicadas pelos gateways, com zero
+rejeições e descartes nos relatórios. Um assinante MQTT independente recebeu
+sequências consecutivas 36–43 em `terrasmart/data/v1`, com os três IDs esperados,
+`boot_id=931718656`, `hops=0` e leitura sintética `42/25/23.5`. Este teste
+confirma uma amostra curta de rádio, UART física e MQTT; não testa reconexão do
+broker, coexistência com FDRS/OTA, descoberta dinâmica ou front-end MQTT ESP8266.
+
+**Reconexão e reboot do node D1, 17/11/2026:** mantendo a mesma topologia,
+somente o front-end MQTT piloto foi apontado temporariamente a um servidor TCP
+de teste que aceitou duas conexões sem enviar CONNACK; o broker compartilhado
+continuou disponível. Durante 12 segundos de indisponibilidade simulada, o
+portal indicou Wi-Fi conectado e MQTT desconectado; os relatórios mostraram a
+fila crescer de duas para quatro leituras, sem rejeições ou descartes. Após
+restaurar a configuração original, o gateway reconectou, esvaziou a fila e
+reportou `queued=0`, `invalid=0`, `framing_rejected=0`, `duplicate=0` e
+`dropped=0`. Um assinante independente recebeu as sequências 128–143 sem
+lacunas, inclusive as leituras 131–137 publicadas após a restauração. A primeira
+tentativa de restaurar pelo portal expirou; uma segunda obteve sucesso e o
+portal confirmou o endpoint original e MQTT conectado. O teste não reiniciou o
+broker real nem verificou indisponibilidade prolongada ou fila cheia.
+
+Em teste separado, a abertura da serial reiniciou o D1: o assinante recebeu
+sequências 156–158 com `boot_id=931718656`, seguidas de sequências 1–5 com
+`boot_id=479277074`, mantendo IDs e leitura esperados. Não foram testados aqui
+reinícios isolados de cada gateway nem recuperação da fila RAM após reboot.
+
+**Reinícios isolados dos gateways e fila cheia, 17/11/2026:** na mesma topologia,
+a abertura da serial reiniciou cada gateway separadamente; em ambos os casos o
+boot e a inicialização do piloto foram observados na respectiva serial. Um
+assinante independente recebeu as sequências 95–103 ao reiniciar o gateway de
+rádio e 104–112 ao reiniciar o gateway MQTT, sem lacunas nesses trechos e com
+`boot_id=479277074`. Esta amostra não garante ausência de perda em todos os
+instantes de reinicialização e não testa reboot com fila pendente.
+
+Em outro ensaio, somente o gateway MQTT piloto foi apontado por 30 segundos ao
+servidor TCP que aceita conexão mas não envia CONNACK; o broker real permaneceu
+acessível. A fila atingiu sua capacidade de sete leituras, e o contador de
+descartes chegou a nove após a reconexão. O assinante independente recebeu
+sequências 119–128 e, após a fila esvaziar, 138–139: as leituras 129–137 foram
+descartadas conforme a política de rejeitar novas leituras quando a fila enche.
+O relatório final mostrou `queued=0`, `dropped=9` e zero quadros inválidos,
+erros de framing ou duplicatas. A configuração original foi restaurada e o
+portal confirmou Wi-Fi e MQTT conectados. O ensaio mostra perda esperada quando
+a interrupção excede a capacidade da fila em RAM; não comprova persistência.
+
+**Reboot do gateway MQTT com fila pendente, 17/11/2026:** com a mesma
+topologia, o front-end piloto foi novamente apontado ao servidor TCP sem
+CONNACK, mantendo o broker real disponível. O último relatório antes do reboot
+indicou MQTT desconectado, quatro leituras em fila e zero descartes. Reabrir
+sua serial reiniciou o ESP32; o boot e a inicialização do piloto foram
+observados, e após o reboot a contagem de publicações voltou a zero. Mantendo o
+endpoint de teste, novas leituras acumularam-se na fila. Depois de restaurar o
+endpoint original, o gateway reconectou e esvaziou essa nova fila; o relatório
+mostrou `queued=0`, `dropped=0` e zero erros de framing, rejeições ou duplicatas.
+
+O assinante independente recebeu sequências 178–180 antes da interrupção e
+187–195 após a reconexão, com `boot_id=479277074`; 181–186 não foram recebidas.
+Havia pelo menos quatro leituras em RAM antes do reboot, mas o ensaio não
+identifica individualmente quais das seis sequências ausentes estavam na fila ou
+foram transmitidas durante a reinicialização. O resultado demonstra que a fila
+anterior não foi recuperada, coerente com a ausência de persistência e ACK UART.
 
 #### PR 8 — integração multi-gateway no broker compartilhado
 

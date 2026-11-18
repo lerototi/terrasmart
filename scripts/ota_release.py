@@ -22,11 +22,28 @@ TARGETS = {
     "esp32dev_gateway": (1, "esp32dev_gateway.bin"),
     "esp32dev_mqtt_gateway": (0, "esp32dev_mqtt_gateway.bin"),
     "d1_mini_mqtt_gateway": (0, "d1_mini_mqtt_gateway.bin"),
+    "esp32dev_uart_mqtt_pilot_local": (0, "esp32dev_uart_mqtt_pilot_local.bin"),
+    "esp32dev_uart_mqtt_pilot": (0, "esp32dev_uart_mqtt_pilot.bin"),
+    "d1_mini_uart_mqtt_pilot": (0, "d1_mini_uart_mqtt_pilot.bin"),
+    "d1_mini_uart_mqtt_pilot_local": (0, "d1_mini_uart_mqtt_pilot_local.bin"),
+    "d1_mini_uart_mqtt_bench": (0, "d1_mini_uart_mqtt_bench.bin"),
 }
+PILOT_ENVS = {
+    "esp32dev_uart_mqtt_pilot_local": "platformio.ini",
+    "esp32dev_uart_mqtt_pilot": "platformio-tests.ini",
+    "d1_mini_uart_mqtt_pilot": "platformio-tests.ini",
+    "d1_mini_uart_mqtt_pilot_local": "platformio-tests.ini",
+    "d1_mini_uart_mqtt_bench": "platformio-tests.ini",
+}
+PILOT_OTA_TOPIC = "terrasmart/pilot/ota"
 FORWARDED_IMAGE_LIMITS = {
     1: 0x1E0000,  # ESP-NOW gateway OTA slot from partitions_ota.csv
 }
 DEFAULT_FORWARDED_IMAGE_LIMIT = 700000
+
+
+def ota_topic(environment, config):
+    return PILOT_OTA_TOPIC if environment in PILOT_ENVS else config.get("mqtt_topic", "terrasmart/ota")
 
 
 def load_config():
@@ -87,7 +104,10 @@ def main():
         pio = find_tool("pio", "platformio")
         target, filename = TARGETS[args.env]
         print(f"Building PlatformIO environment: {args.env}", flush=True)
-        subprocess.run([pio, "run", "-e", args.env], cwd=PROJECT_DIR, check=True)
+        build_args = [pio, "run"]
+        if args.env in PILOT_ENVS:
+            build_args.extend(["-c", PILOT_ENVS[args.env]])
+        subprocess.run(build_args + ["-e", args.env], cwd=PROJECT_DIR, check=True)
 
         image = PROJECT_DIR / ".pio" / "build" / args.env / "firmware.bin"
         if not image.is_file():
@@ -131,7 +151,8 @@ def main():
             print(f"Payload saved to: {payload_path}")
 
         print(f"\nFirmware copied to: {staged_image}")
-        print(f"OTA payload for topic {config.get('mqtt_topic', 'terrasmart/ota')}:")
+        topic = ota_topic(args.env, config)
+        print(f"OTA payload for topic {topic}:")
         print(payload)
 
         forwarded_limit = FORWARDED_IMAGE_LIMITS.get(
@@ -160,7 +181,7 @@ def main():
                 "-q",
                 "1",
                 "-t",
-                config.get("mqtt_topic", "terrasmart/ota"),
+                topic,
                 "-m",
                 payload,
             ]

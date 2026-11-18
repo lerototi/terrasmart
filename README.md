@@ -76,8 +76,10 @@ configuration preserves the other slot. Older production firmware with a
 erased pilot settings must be entered again. The experimental ESP8266 discovery
 node independently uses the beginning of EEPROM and can overwrite these records;
 do not switch a configured MQTT device to that firmware without a backup.
-Pilot settings do not replace production settings. The pilot has no
-FDRS command or OTA support. See `AGENTS.md` for the project reuse policy.
+Pilot settings do not replace production settings. The MQTT pilot has experimental
+local OTA on `terrasmart/pilot/ota`, targeting only the MQTT gateway; it has no
+FDRS commands or radio gateway/node OTA. See `docs/ota.md` for setup, telemetry
+pause and pending hardware validation, and `AGENTS.md` for the project reuse policy.
 
 The firmware in `src/gateway.cpp` is intentionally an ESP-NOW-only gateway. It does not connect to Wi-Fi, so there is no active SSID/password in `include/terrasmart_gateway_config.h`.
 

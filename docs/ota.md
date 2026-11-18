@@ -1,5 +1,73 @@
 # OTA TerraSmart
 
+## OTA local do gateway MQTT piloto
+
+O piloto `uart_mqtt_pilot.cpp` para ESP32 e ESP8266 reutiliza o download,
+validação e gravação OTA local de produção, com tópico isolado
+`terrasmart/pilot/ota`. O comando exige o `gateway_id` exato mostrado no portal
+e `target: 0`; outros targets são rejeitados. O piloto não assina
+`terrasmart/ota`, e os firmwares atuais de produção usam esse tópico de produção,
+não o tópico piloto. Confirmar também as assinaturas de firmwares antigos antes
+de operar ambos no mesmo broker. A identidade é da placa física e pode ser a
+mesma ao trocar entre firmwares; o tópico separa os ambientes, não autentica o
+dispositivo. Restringir publicação nos dois tópicos por ACL.
+
+Use o mesmo JSON da seção abaixo, mas publique **sem retenção** em
+`terrasmart/pilot/ota`. `scripts/ota_release.py` reconhece os ambientes MQTT
+piloto e seleciona esse tópico independentemente do `mqtt_topic` configurado
+para produção. Por exemplo:
+
+```bash
+python3 scripts/ota_release.py --env esp32dev_uart_mqtt_pilot_local \
+  --gateway-id gw-383E51D3E374 --www-dir /caminho/montado/config/www \
+  --base-url http://IP_DO_SERVIDOR:8123
+```
+
+O script compila, copia e apresenta o comando; `--publish` efetua publicação.
+Somente publicar imagem compatível com a placa e o firmware piloto. A imagem
+ESP32 não pode exceder o limite atual de 1.200.000 bytes; no ESP8266, o limite
+do código é 700.000 bytes e a imagem também precisa caber no espaço OTA real.
+
+Durante a tentativa de atualização local, a publicação é pausada. Leituras v1
+válidas recebidas pela UART nesse intervalo são descartadas e contabilizadas em
+`ota_discarded`; o node e o gateway de rádio continuam transmitindo. Leitura
+parcial, overflow da UART e reinício podem causar perdas adicionais não contadas.
+A fila anterior permanece apenas em RAM: após falha, a publicação retoma e essa
+fila pode ser enviada; após atualização bem-sucedida e reboot, ela é perdida.
+O contador também reinicia no reboot. Não há ACK UART nem garantia de entrega.
+
+O ESP32 piloto usa a tabela padrão do ambiente, com dois slots OTA de 1.280 KiB.
+Antes da primeira OTA, conferir a tabela gravada e a partição ativa; se forem
+incompatíveis, preparar a migração por USB preservando NVS e dados existentes.
+O ESP8266 usa o layout do ambiente existente e mantém a configuração piloto no
+slot EEPROM documentado no README. Os outros ambientes piloto de descoberta e
+de rádio não ganham OTA com esta etapa.
+
+**Verificação de código:** compilaram o piloto MQTT ESP32 e ESP8266, os gateways
+de produção de ambas plataformas e os ambientes de node afetados; os testes
+nativos de tópico/target/identidade e os testes Python de seleção de tópico
+passaram.
+
+**Bancada ESP32, 17/11/2026:** gateway `gw-383E51D3E374` em `/dev/ttyUSB0`,
+node D1 `EC:FA:BC:D4:E7:33` e gateway de rádio `D4:E9:F4:02:E5:EC`. A tabela
+existente foi lida antes da gravação: dois slots OTA de 1.280 KiB e NVS preservada;
+o firmware e a tabela padrão foram gravados por USB com hashes verificados. O
+gateway reconectou e assinou `terrasmart/pilot/ota`. Comandos no tópico piloto
+com outro `gateway_id` e com `target: 1` foram rejeitados sem download HTTP.
+Uma imagem piloto de 1.027.296 bytes servida por HTTP privado com CRC errado
+falhou, retomou a publicação e contou quatro leituras descartadas durante a
+pausa. Com o CRC correto, a mesma imagem foi atualizada com sucesso: o gateway
+reiniciou, reconectou ao Wi-Fi/MQTT, reassinou o tópico e um assinante
+independente voltou a receber leituras do D1. A leitura posterior de `otadata`
+mostrou sequência 2 para o segundo slot. A abertura da serial e a leitura da
+flash reiniciaram o gateway adicionalmente. O teste verificou o ESP32 com a
+mesma imagem, não uma mudança de versão.
+
+Ainda faltam bancada do piloto ESP8266 e prova física de isolamento com um
+gateway de produção conectado; também não foi enviado comando ao tópico global
+de produção nessa bancada. O encaminhamento OTA ao gateway de rádio e aos nodes
+permanece para outra etapa.
+
 ## Topologia
 
 ```text

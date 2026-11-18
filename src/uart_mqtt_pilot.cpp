@@ -15,9 +15,9 @@
 #include "terrasmart_data_v1.h"
 #include "terrasmart_discovery_packet.h"
 #include "terrasmart_mqtt_identity.h"
+#include "terrasmart_pilot_ota.h"
 
-// Credentials are local build inputs. This pilot does not read or overwrite the
-// existing gateway configuration and deliberately does not implement OTA.
+// Credentials are local build inputs; pilot configuration remains isolated.
 #if __has_include("terrasmart_pilot_secrets.h")
 #include "terrasmart_pilot_secrets.h"
 #endif
@@ -48,6 +48,8 @@
 #define ESP32_MQTT_GATEWAY_FIRMWARE
 #endif
 #define TERRASMART_PILOT_PORTAL
+#define TERRASMART_OTA_MQTT
+#define TERRASMART_PILOT_OTA_LOCAL_ONLY
 #ifndef WIFI_SSID
 #define WIFI_SSID PILOT_WIFI_SSID
 #define WIFI_PASS PILOT_WIFI_PASSWORD
@@ -74,6 +76,9 @@ const char *mqtt_user = nullptr, *mqtt_pass = nullptr;
 int mqtt_port = 1883;
 char pilotGatewayId[16] = {};
 const char *terrasSmartMqttGatewayId() { return pilotGatewayId; }
+void terrasSmartPilotOtaPauseTelemetry(bool paused);
+void terrasSmartOtaServiceStatusLed() {}
+#include "terrasmart_ota.h"
 #include "terrasmart_mqtt_gateway_shared.inc"
 #endif
 
@@ -86,6 +91,11 @@ Item queue[QUEUE_SIZE];
 uint8_t head = 0, tail = 0;
 uint32_t dropped = 0, invalid = 0, framingRejected = 0, duplicate = 0, published = 0;
 uint32_t uartBytes = 0, uartMarkers = 0;
+uint32_t otaDiscarded = 0;
+bool telemetryPaused = false;
+bool otaSubscribed = false;
+char pendingOtaCommand[512];
+size_t pendingOtaLength = 0;
 uint32_t lastReport = 0, nextMqttAttempt = 0;
 bool uartServiceReady = false;
 #if defined(ESP32)
@@ -132,6 +142,7 @@ void receivePayload(const uint8_t *payload) {
     lockQueue(); ++invalid; unlockQueue(); return;
   }
   lockQueue();
+  if (telemetryPaused) { ++otaDiscarded; unlockQueue(); return; }
   if (isDuplicate(frame)) { ++duplicate; unlockQueue(); return; }
   uint8_t next = (head + 1) % QUEUE_SIZE;
   if (next == tail) { ++dropped; unlockQueue(); return; }
@@ -201,6 +212,22 @@ void publishPending() {
 }
 } // namespace
 
+void terrasSmartPilotOtaPauseTelemetry(bool paused) {
+  lockQueue(); telemetryPaused = paused; unlockQueue();
+  Serial.println(paused ? "Pilot OTA: telemetry paused" : "Pilot OTA: telemetry resumed");
+}
+
+void pilotMqttCallback(char *topic, uint8_t *payload, unsigned int length) {
+  if (!terrasSmartPilotOta::acceptsTopic(topic)) return;
+  if (terrasSmartOtaUpdateInProgress() || pendingOtaLength ||
+      !length || length > sizeof(pendingOtaCommand)) {
+    Serial.println("Pilot OTA command ignored: busy or invalid length");
+    return;
+  }
+  memcpy(pendingOtaCommand, payload, length);
+  pendingOtaLength = length;
+}
+
 #if defined(ESP8266)
 void servicePilotUart() { if (uartServiceReady) readUart(); }
 #endif
@@ -240,6 +267,7 @@ void setup() {
 #endif
   if (!uartServiceReady) Serial.println("UART receiver service failed; MQTT reconnect disabled");
   mqtt.setBufferSize(512); mqtt.setSocketTimeout(1);
+  mqtt.setCallback(pilotMqttCallback);
   buildApIdentity(); loadConfiguration(); applyConfiguration();
   networkInitialized = true;
   WiFi.mode(WIFI_AP_STA);
@@ -264,19 +292,32 @@ void loop() {
     if (mqttUser.length()) mqtt.connect(clientId, mqttUser.c_str(), mqttPassword.c_str());
     else mqtt.connect(clientId);
   }
-  mqtt.loop(); publishPending();
+  if (!mqtt.connected()) otaSubscribed = false;
+  if (mqtt.connected() && !otaSubscribed) {
+    otaSubscribed = mqtt.subscribe(terrasSmartPilotOta::TOPIC);
+    if (otaSubscribed) Serial.println("Pilot OTA topic subscribed");
+  }
+  mqtt.loop();
+  if (pendingOtaLength) {
+    const size_t length = pendingOtaLength;
+    pendingOtaLength = 0;
+    terrasSmartOtaHandleMqttCommand(reinterpret_cast<const uint8_t *>(pendingOtaCommand), length);
+  }
+  publishPending();
   if (now - lastReport >= 5000) {
     lastReport = now;
     lockQueue();
     const uint8_t queued = (head + QUEUE_SIZE - tail) % QUEUE_SIZE;
     const uint32_t localPublished = published, localBytes = uartBytes, localMarkers = uartMarkers;
     const uint32_t localInvalid = invalid, localRejected = framingRejected, localDuplicate = duplicate, localDropped = dropped;
+    const uint32_t localOtaDiscarded = otaDiscarded;
     unlockQueue();
-    Serial.printf("WiFi=%d MQTT=%d queued=%u published=%lu uart_bytes=%lu uart_markers=%lu invalid=%lu framing_rejected=%lu duplicate=%lu dropped=%lu\n",
+    Serial.printf("WiFi=%d MQTT=%d queued=%u published=%lu uart_bytes=%lu uart_markers=%lu invalid=%lu framing_rejected=%lu duplicate=%lu dropped=%lu ota_discarded=%lu\n",
         WiFi.status() == WL_CONNECTED, mqtt.connected(), queued,
         static_cast<unsigned long>(localPublished), static_cast<unsigned long>(localBytes),
         static_cast<unsigned long>(localMarkers), static_cast<unsigned long>(localInvalid),
-        static_cast<unsigned long>(localRejected), static_cast<unsigned long>(localDuplicate), static_cast<unsigned long>(localDropped));
+        static_cast<unsigned long>(localRejected), static_cast<unsigned long>(localDuplicate), static_cast<unsigned long>(localDropped),
+        static_cast<unsigned long>(localOtaDiscarded));
   }
   delay(1);
 }
