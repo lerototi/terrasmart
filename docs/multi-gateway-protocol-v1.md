@@ -83,8 +83,8 @@ cheia são contabilizados. A comparação de MAC não autentica a origem.
 
 ```bash
 pio test -c platformio-native.ini -e native -f test_data_v1
-pio run -e esp32dev_data_v1_pilot
-pio run -e d1_mini_data_v1_pilot
+pio run -c platformio-tests.ini -e esp32dev_data_v1_pilot
+pio run -c platformio-tests.ini -e d1_mini_data_v1_pilot
 ```
 
 Os ambientes piloto usam a MAC STA de fábrica `38:3E:51:D3:E3:74` do ESP32 de
